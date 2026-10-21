@@ -46,10 +46,38 @@
   }
   XHR.send = function (this: any, ...args: any[]) {
     this.addEventListener('load', function (this: any) {
-      const ct = this.getResponseHeader('content-type') ?? ''
-      if (ct.includes('json')) maybeRecord((this as any).__bhUrl, this.responseText)
+      try {
+        // 关键：BOSS 部分请求把 responseType 设成了 'json'，
+        // 此时读 responseText 会抛 InvalidStateError，整条记录（含薪资/活跃）就丢了。
+        // 优先用 response（已解析好的对象），拿不到再退回 responseText。
+        const ct = this.getResponseHeader('content-type') ?? ''
+        if (!ct.includes('json')) return
+        const rt = this.responseType
+        if (rt === 'json') {
+          if (this.response) record(this.__bhUrl, this.response)
+          return
+        }
+        if (rt === '' || rt === 'text') {
+          maybeRecord(this.__bhUrl, this.responseText)
+        }
+      } catch {
+        // 单个请求解析失败不能影响页面本身
+      }
     })
     return origSend.apply(this, args as any)
+  }
+
+  /** 直接记录已解析好的对象（responseType='json' 的分支） */
+  function record(url: string, data: any) {
+    try {
+      if (!data) return
+      const text = JSON.stringify(data)
+      if (!/salary|encryptJobId|activeTime|bossOnline|jobList|lowSalary/i.test(text)) return
+      records.push({ url, data })
+      window.postMessage({ type: 'bh-net', url, data }, '*')
+    } catch {
+      // 忽略
+    }
   }
 
   // 扩展脚本启动后请求重放，避免错过初始化前的捕获

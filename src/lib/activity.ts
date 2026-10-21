@@ -31,9 +31,20 @@ export function classifyActiveTime(time: number): BossActive {
   return 'inactive'
 }
 
-/** 判断某职位活跃等级是否满足所选筛选选项 */
+/**
+ * 判断某职位活跃等级是否满足所选筛选选项。
+ *
+ * 注意 `level === 'none'`（拿不到活跃信息）时**放行**：
+ * 实测 BOSS 职位列表接口常常不返回 lastModifyTime，卡片上也没有活跃文案，
+ * 这时如果按"不满足"剔除，会把整页职位筛空。缺数据 ≠ 不活跃。
+ */
 export function activeWithin(level: BossActive, option: BossActive): boolean {
   if (option === 'none' || level === 'none') return true
   const rank: Record<BossActive, number> = { none: -1, justNow: 0, today: 1, last3days: 2, thisWeek: 3, thisMonth: 4, inactive: 5 }
   return rank[level] <= rank[option]
+}
+
+/** 活跃信息是否缺失（用于日志提示"因缺数据放行"） */
+export function isActiveUnknown(level: BossActive): boolean {
+  return level === 'none'
 }

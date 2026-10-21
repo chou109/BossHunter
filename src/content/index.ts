@@ -3,6 +3,10 @@ import { passFilter } from '../lib/filter'
 import { classifyActiveText, classifyActiveTime } from '../lib/activity'
 import { DEFAULT_CONFIG } from '../lib/types'
 import type { AppConfig, BossActive, JobItem, TimeInterval } from '../lib/types'
+import { readGreeting, renderGreeting, signedHeaders, writeCustomGreetingVerified } from '../lib/greeting'
+import { decodeSalaryText, hasSalaryDigits } from '../lib/range'
+import { isProgressStale, loadProgress, saveProgress } from '../lib/progress'
+import type { GreetingState } from '../lib/greeting'
 import { Panel } from './panel'
 
 /**
@@ -18,14 +22,38 @@ const VUE_LIST_SELECTORS = [
   '.job-list-wrapper',
 ]
 const CARD_SELECTORS = [
-  '.job-card-wrapper',
-  '.job-card-box',
+  '.job-card-box',       // 真实列表页根节点（实测 15/15 命中）
+  '.job-card-wrapper',   // 其他版本/推荐页兜底（本页实测 0）
   '.recommend-list .job-card-wrapper',
   '.job-primary-list .job-card-wrapper',
 ].join(', ')
 
 let cfg: AppConfig = { ...DEFAULT_CONFIG }
 let panel!: Panel
+/**
+ * 扩展被「重新加载」后，已开页面里的旧 content script 会与扩展失联：
+ * chrome.runtime.id 变成 undefined，此后任何 chrome.* 调用都抛 "Extension context invalidated"。
+ * 面板 DOM 还在、按钮还能点，但配置读写与筛选全部静默失效 —— 表现为「点按钮没反应」。
+ * 这里主动探测并把面板切到失效态，提示用户刷新页面。
+ */
+function extensionAlive(): boolean {
+  try {
+    return !!(chrome?.runtime?.id && chrome.runtime?.getManifest)
+  } catch {
+    return false
+  }
+}
+
+function markStaleIfNeeded(): boolean {
+  if (extensionAlive()) return false
+  try {
+    panel?.setStale(true)
+    panel?.setStatus('扩展已重新加载，请刷新页面后继续', 'warn')
+  } catch {
+    /* panel 还没建好时忽略 */
+  }
+  return true
+}
 let running = false
 let stopRequested = false
 let paused = false
@@ -40,9 +68,14 @@ let retryQueue: { job: JobItem; reason: string }[] = []
 // 网络hook(MAIN世界)捕获到的 BOSS 职位接口数据，用于真实薪资/Boss活跃
 const capturedNet: { url: string; data: any }[] = []
 let apiJobList: any[] = []
+/** 上一次自动补足"到底"时页面上的卡片数；用来避免站点没变化时反复滚动空转 */
+let fillExhaustedAt = 0
 window.addEventListener('message', (e) => {
   if (e.data?.type === 'bh-net') {
     capturedNet.push(e.data)
+    // 只保留最近 60 条：这个数组是给「调试」导出和翻页取样本 URL 用的，
+    // 挂机几小时会长到几千条并拖慢内存，限制一下。
+    if (capturedNet.length > 60) capturedNet.splice(0, capturedNet.length - 60)
     const url = String(e.data.url ?? '')
     if (/job\/list\.json|recommend\/job\/list|search\/joblist\.json|joblist\.json/i.test(url)) {
       const jobs = e.data.data?.zpData?.jobList
@@ -62,13 +95,30 @@ window.addEventListener('message', (e) => {
         const exists = new Set(apiJobList.map((j) => j.encryptJobId))
         apiJobList = apiJobList.concat(jobs.filter((j) => j.encryptJobId && !exists.has(j.encryptJobId)))
       }
+      // 职位池也设个上限：正常只需要目标数量 + 若干页余量。
+      // 无上限翻页在长时间挂机时会把几千个职位全塞在内存里，过滤和统计都会变慢。
+      const CAP = Math.max(300, (cfg?.targetCount || 20) * 3)
+      if (apiJobList.length > CAP) apiJobList = apiJobList.slice(0, CAP)
       rebuildJobsFromApi()
     }
   }
 })
 
+/** 基础延时。注意：标签页转到后台后，Chrome 会把定时器合并到 ≥1s 粒度，
+ *  所以 150ms 的等待实际会变成约 1s。需要"至少等够多久"的地方请用 sleepAtLeast。 */
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms))
+}
+
+/** 节流补偿：后台标签页里 setTimeout 会被拉长，这里按真实耗时补齐，
+ *  保证"至少等够 ms"。前台通常一次就够，几乎零额外开销。 */
+async function sleepAtLeast(ms: number) {
+  const t0 = performance.now()
+  for (let i = 0; i < 6; i++) {
+    const left = ms - (performance.now() - t0)
+    if (left <= 0) return
+    await sleep(left)
+  }
 }
 
 /** 点击元素但阻止其默认导航（避免 javascript: 触发 CSP 拦截），只触发事件处理器。
@@ -128,7 +178,9 @@ function buildJob(raw: any, card: HTMLElement | undefined): JobItem {
   const text = pickCardText(card)
   const jobName = raw?.jobName ?? raw?.positionName ?? ''
   const company = raw?.brandName ?? raw?.companyName ?? ''
-  const salaryDesc = raw?.salaryDesc ?? ''
+  // 接口给的 salaryDesc 是明文（"10-15K"）；若落到 DOM 兜底则是字体加密字符，
+  // 统一解码一次，保证后续薪资筛选/展示拿到的是可读文本。
+  const salaryDesc = decodeSalaryText(String(raw?.salaryDesc ?? ''))
   const bossName = raw?.bossName ?? ''
   const bossTitle = raw?.bossTitle ?? ''
   const link = card?.querySelector<HTMLAnchorElement>('a[href]')?.href ?? ''
@@ -179,13 +231,16 @@ function buildFromCards(): JobItem[] {
       const cardId = href.match(/job_detail\/([^/.?]+)/)?.[1] ?? ''
       let raw = byId.get(cardId)
       if (!raw) {
-        // 兜底：按职位名
-        const text = normText(c.textContent ?? '')
+        // 兜底：只接受职位名完全相等（旧实现用 `卡片全文.includes(职位名)`，
+        // 会让「Java」这类短名匹配到任意含该词的卡片，造成错配与统计虚高）
         const cName = normText(c.querySelector<HTMLElement>('.job-name')?.textContent ?? '')
-        raw = rawPool.find((r) => {
-          const key = normText(String(r?.jobName ?? r?.positionName ?? ''))
-          return key && (key === cName || text.includes(key)) && !used.has(String(r?.encryptJobId ?? key))
-        })
+        if (cName) {
+          raw = rawPool.find((r) => {
+            const key = normText(String(r?.jobName ?? r?.positionName ?? ''))
+            const rid = String(r?.encryptJobId ?? key)
+            return key && key === cName && !used.has(rid)
+          })
+        }
       }
       if (raw) used.add(String(raw.encryptJobId ?? normText(String(raw.jobName ?? raw.positionName ?? ''))))
       return buildJob(raw ?? DOMRaw(c), c)
@@ -196,22 +251,36 @@ function buildFromCards(): JobItem[] {
 
 const normText = (s: string) => s.replace(/\s+/g, '').toLowerCase()
 
-/** 按职位名从卡片列表里找匹配的卡片（用于把接口数据对到 DOM 卡片上） */
-function matchCardFor(raw: any, cards: HTMLElement[]): HTMLElement | undefined {
-  // 优先按 encryptJobId 与卡片 href 精确配对，避免信息错位
+/**
+ * 按职位名从卡片列表里找匹配的卡片（用于把接口数据对到 DOM 卡片上）。
+ *
+ * 只允许两种匹配：
+ *   1. encryptJobId 与卡片 href 精确相等（唯一可靠的方式）
+ *   2. 职位名**完全相等**（normalize 后）
+ *
+ * 以前还有一条 `卡片全文.includes(职位名)` 的宽松兜底，非常危险：
+ * 例如接口里的「Java」会匹配到任意一张含「Java」字样的卡片，
+ * 结果多个接口职位指向同一张卡 → 面板报"可投 33 个"、实际页面只有 15 张卡，
+ * 投递时还会把 A 职位当成 B 职位投出去。
+ */
+function matchCardFor(raw: any, cards: HTMLElement[], usedIds?: Set<string>): HTMLElement | undefined {
   const id = String(raw?.encryptJobId ?? '')
   if (id) {
     const byId = cards.find((c) => {
-      const href = c.querySelector<HTMLAnchorElement>('a[href*="job_detail"]')?.href ?? ''
-      return href.includes(id)
+      if (usedIds?.has(cardJobId(c))) return false
+      return cardJobId(c) === id
     })
     if (byId) return byId
+    // id 对不上就不要再猜了：宁可这条没有卡片，也不要错配到别人的卡片
+    return undefined
   }
+  // 没有 id 的兜底：只接受职位名完全相等，且卡片未被占用
   const name = normText(String(raw?.jobName ?? raw?.positionName ?? ''))
   if (!name) return undefined
   return cards.find((c) => {
+    if (usedIds?.has(cardJobId(c))) return false
     const cName = normText(c.querySelector<HTMLElement>('.job-name')?.textContent ?? '')
-    return cName === name || normText(c.textContent ?? '').includes(name)
+    return cName === name
   })
 }
 
@@ -220,43 +289,119 @@ function rebuildJobsFromApi() {
   if (!apiJobList.length) return
   usingApi = true
   const cards = readCards()
-  // 以接口数据为准构建职位：优先匹配到 DOM 卡片（用于展示/隐藏/投递定位），匹配不到的也保留（用于凑数）
-  lastJobs = apiJobList.map((raw) => buildJob(raw, matchCardFor(raw, cards)))
+  // 一张卡片只能被一个职位占用：否则多个接口职位会指向同一张卡，
+  // 统计虚高、投递时还会把 A 职位当 B 投出去。
+  const usedIds = new Set<string>()
+  lastJobs = apiJobList.map((raw) => {
+    const card = matchCardFor(raw, cards, usedIds)
+    if (card) usedIds.add(cardJobId(card))
+    return buildJob(raw, card)
+  })
   matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
   applyVisualFilter()
-  panel?.setStats(lastJobs.length, matchedJobs.length)
+  panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
   panel?.setStatus(`接口数据：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
 }
 
-/** 合并接口真实数据与卡片 DOM，产出职位列表 */
+/** 卡片 href 里的职位 id（用于与接口数据精确配对） */
+function cardJobId(card: HTMLElement): string {
+  const href = card.querySelector<HTMLAnchorElement>('a[href*="job_detail"]')?.href ?? ''
+  return href.match(/job_detail\/([^/.?]+)/)?.[1] ?? ''
+}
+
+/** 把 DOM 卡片里的职位合并进接口池，返回新增条数。
+ *  站点是虚拟滚动的：卡片一旦滚出可视区就会被销毁，
+ *  只以 DOM 为准会把"已经抓到、但卡片暂时不在页面上"的职位全部丢掉。 */
+function mergeDomJobsIntoPool(): number {
+  if (!apiJobList.length) return 0
+  const known = new Set(apiJobList.map((j) => String(j?.encryptJobId ?? '')).filter(Boolean))
+  const before = apiJobList.length
+  for (const card of readCards()) {
+    const id = cardJobId(card)
+    const raw = DOMRaw(card)
+    const name = String(raw.jobName ?? '').trim()
+    // 没有职位名的卡片是占位骨架，不要污染池子
+    if (!id && !name) continue
+    const key = id || normText(`${name}-${raw.brandName ?? ''}-${raw.salaryDesc ?? ''}`)
+    if (!key || known.has(key)) continue
+    known.add(key)
+    apiJobList.push({ ...raw, encryptJobId: id || key })
+  }
+  return apiJobList.length - before
+}
+
+/**
+ * 产出职位列表：以「已抓到的接口池 + 当前 DOM 卡片」为准。
+ *
+ * 旧实现只按 DOM 卡片重建（buildFromCards），于是接口已经拉到 200 个职位时，
+ * 页面上任何一次变动（400ms 防抖的 watchList）都会把统计改回"页面上那 15 个"，
+ * 自动补足出来的数量就这么塌回去了。现在两边合并后再统计。
+ */
 function collectJobs(): JobItem[] {
-  if (apiJobList.length || readVueJobList().length) {
+  const cards = readCards()
+  if (cards.length) mergeDomJobsIntoPool()
+  if (apiJobList.length) {
+    usingApi = true
+    const raws = apiJobList.slice()
+    const covered = new Set(raws.map((r) => String(r?.encryptJobId ?? '')).filter(Boolean))
+    // 一张卡片只能被一个职位占用，避免多个接口职位错配到同一张卡
+    const usedIds = new Set<string>()
+    const jobs = raws.map((raw) => {
+      const card = matchCardFor(raw, cards, usedIds)
+      if (card) usedIds.add(cardJobId(card))
+      return buildJob(raw, card)
+    })
+    // 兜底：接口池里没有、但页面上确实存在的卡片也要能参与筛选
+    for (const card of cards) {
+      const id = cardJobId(card)
+      const name = String(DOMRaw(card).jobName ?? '').trim()
+      if ((id && covered.has(id)) || (!id && !name)) continue
+      if (id && usedIds.has(id)) continue
+      covered.add(id || name)
+      jobs.push(buildJob(DOMRaw(card), card))
+    }
+    return jobs
+  }
+  if (readVueJobList().length) {
     usingApi = true
     return buildFromCards()
   }
   // 兜底：只有 DOM
-  return readCards().map((c) => buildJob(DOMRaw(c), c))
+  return cards.map((c) => buildJob(DOMRaw(c), c))
 }
 
-/** 从卡片 DOM 读取真实字段（对照 bosszhipin .job-card-box 结构） */
+/** 从卡片 DOM 读取真实字段。
+ *  真实结构（v6772）：.job-card-wrapper > .job-card-left > .job-name/.salary/.tag-list li/.boss-online-tag
+ *  以及 .job-card-right（公司名）、.job-card-footer（boss 信息、地区）。 */
 function DOMRaw(card: HTMLElement): any {
   const t = (s: string) => card.querySelector(s)?.textContent?.trim() ?? ''
+  // 一个字段多个候选，按顺序取第一个非空的
+  const tAny = (...sels: string[]) => {
+    for (const s of sels) {
+      const v = t(s)
+      if (v) return v
+    }
+    return ''
+  }
   const tags = Array.from(card.querySelectorAll('.tag-list li'))
     .map((n) => n.textContent?.trim() ?? '')
     .filter(Boolean)
+  const text = card.textContent ?? ''
   return {
-    jobName: t('.job-name') || t('.job-card-title'),
-    salaryDesc: t('.job-salary') || t('.salary'),
-    brandName: t('.boss-name') || t('.company-name'),
+    jobName: tAny('.job-name', '.job-title', '.job-card-title'),
+    salaryDesc: tAny('.salary', '.job-salary'),
+    brandName: tAny('.boss-name', '.company-name', '.company-name-text'),
     bossName: '',
-    bossTitle: t('.boss-title'),
+    bossTitle: tAny('.boss-title', '.boss-info-attr'),
     jobLabels: tags,
     skills: tags,
-    cityName: t('.company-location'),
-    goldHunter: /猎头/.test(card.textContent ?? '') ? 1 : 0,
-    contact: /已沟通|已投递/.test(card.textContent ?? ''),
-    jobExperience: card.textContent?.match(/在校\/应届|应届生|经验不限|1-3年|3-5年|5-10年|10年以上/)?.[0] ?? '',
-    jobType: /实习/.test(t('.job-name') || '') ? 4 : 0,
+    cityName: tAny('.company-location', '.job-area', '.job-address-desc'),
+    goldHunter: /猎头/.test(text) ? 1 : 0,
+    contact: /已沟通|已投递/.test(text),
+    jobExperience: text.match(/在校\/应届|应届生|经验不限|1年以内|1-3年|3-5年|5-10年|10年以上/)?.[0] ?? '',
+    jobType: /实习/.test(tAny('.job-name', '.job-title')) ? 4 : 0,
+    // 卡片上直接可见的在线标记（详情面板里另有更准的）
+    bossOnline: !!card.querySelector('.boss-online-tag'),
   }
 }
 
@@ -295,9 +440,11 @@ function hasActiveFilter(cfg: AppConfig): boolean {
   )
 }
 
-/** 是否允许自动加载更多：已有接口数据源、且没在批量投递时 */
+/** 是否允许自动加载更多：没在批量投递、页面也没失联就可以。
+ *  以前还要求 usingApi，导致没捕获到接口数据时（纯卡片模式）筛选后完全不自动补足，
+ *  只剩页面上那十几个里通过的两三个。滚动加载本身就能在纯 DOM 模式下工作。 */
 function matchingAutoFillAllowed(): boolean {
-  return usingApi && !running
+  return !running
 }
 
 /** 当前启用了哪些筛选（供列表被清空时打印，方便排查） */
@@ -328,77 +475,206 @@ function activeFilterSummary(cfg: AppConfig): string[] {
   return out
 }
 
-function applyVisualFilter() {
-  // 点了「显示全部」后临时跳过隐藏；重新应用筛选会复位
-  if (showAllOverride) {
-    for (const j of lastJobs) {
-      const el = ((j.element as HTMLElement)?.closest('.job-card-wrap, .card-area') ?? (j.element as HTMLElement)) as HTMLElement | null
-      if (el) el.style.display = ''
-    }
-    return lastJobs.length
-  }
-  // 只有真正设置了筛选才隐藏卡片；否则一个都不动（确保不是扩展弄空列表）
-  const filtering = hasActiveFilter(cfg)
-  const shownCards = new Set(matchedJobs.map((j) => (j.element as HTMLElement)?.closest('.job-card-wrap, .card-area') ?? (j.element as HTMLElement)))
-  let kept = 0
-  for (const j of lastJobs) {
-    const el = ((j.element as HTMLElement)?.closest('.job-card-wrap, .card-area') ?? (j.element as HTMLElement)) as HTMLElement | null
-    if (!el) continue
-    if (!filtering) {
+/**
+ * 被我们隐藏掉的卡片节点。
+ *
+ * 只记自己改过的节点，还原时按这份记录清 display：
+ * 隐藏命中的可能是卡片自身，也可能是它的外层容器（某些版本是 `.job-card-wrap` / `.card-area`），
+ * 如果「隐藏」和「还原」看的不是同一个节点，隐藏就会一直留在祖先上，
+ * 列表高度被压没 → 没有可滚空间 → 「查看更多」判定"到底"，页面就只剩筛出来的几条。
+ */
+const hiddenEls = new Set<HTMLElement>()
+
+/** 卡片占用的那一块：隐藏与还原都必须命中同一个节点。
+ *  真实层级是 `.card-area > .job-card-wrap > .job-card-box`，
+ *  其中 `.job-card-wrap` 才是带 `active` 状态的外层块，隐藏它效果最干净。 */
+function cardBoxOf(job: JobItem): HTMLElement | null {
+  const el = job.element as HTMLElement | undefined
+  if (!el) return null
+  return (el.closest('.job-card-wrap, .card-area') as HTMLElement | null) ?? el
+}
+
+/** 把之前隐藏过的卡片全部还原（同时清空记录） */
+function restoreAllCards() {
+  for (const el of hiddenEls) {
+    try {
       el.style.display = ''
-      kept++
-      continue
+    } catch {
+      /* 节点已随页面销毁，忽略 */
     }
-    // 只有通过筛选的职位可见
-    const show = shownCards.has(el)
-    el.style.display = show ? '' : 'none'
-    if (show) kept++
   }
-  return kept
+  hiddenEls.clear()
+}
+
+function applyVisualFilter() {
+  // 先无条件还原上一轮隐藏，避免"上次挡住、这次漏还原"的残留状态
+  restoreAllCards()
+
+  // 点了「显示全部」后临时跳过隐藏；重新应用筛选会复位
+  if (showAllOverride) return lastJobs.length
+
+  // 只有真正设置了筛选才隐藏卡片；否则一个都不动（确保不是扩展弄空列表）
+  if (!hasActiveFilter(cfg)) return lastJobs.length
+
+  const shownCards = new Set<HTMLElement>()
+  for (const j of matchedJobs) {
+    const el = cardBoxOf(j)
+    if (el) shownCards.add(el)
+  }
+
+  // 关键：遍历**页面上实际存在的所有卡片**，而不是只遍历 lastJobs。
+  // lastJobs 里混着大量"接口有、卡片没有"的职位（补足数量用），
+  // 如果按 lastJobs 收集，没通过筛选的卡片根本不在集合里，就永远不会被隐藏 ——
+  // 表现为统计显示"保留 3 个"，但页面上 15 张卡片全都还在。
+  const allCards = new Set<HTMLElement>()
+  for (const card of readCards()) {
+    const box = (card.closest('.job-card-wrap, .card-area') as HTMLElement | null) ?? card
+    allCards.add(box)
+  }
+  // 再补上 lastJobs 里可能命中、但 readCards() 没覆盖到的节点（防御性）
+  for (const j of lastJobs) {
+    const el = cardBoxOf(j)
+    if (el) allCards.add(el)
+  }
+
+  // 只有通过筛选的职位可见
+  for (const el of allCards) {
+    if (shownCards.has(el)) continue
+    el.style.display = 'none'
+    hiddenEls.add(el)
+  }
+  return shownCards.size
 }
 
 /** 临时恢复所有卡片可见（加载更多前用，避免被隐藏的卡片压低列表高度、干扰虚拟滚动） */
 function showAllCards() {
-  for (const c of readCards()) c.style.display = ''
+  restoreAllCards()
+}
+
+/** 页面是否还有未被我们压掉的滚动空间。
+ *  筛选把大多数卡片隐藏后，列表高度可能不足一屏，滚动加载就彻底失去触发条件；
+ *  这时先放开隐藏、临时恢复可滚高度，等加载完再重新隐藏。 */
+function listScrollable(): boolean {
+  return document.documentElement.scrollHeight > document.documentElement.clientHeight + 20
 }
 
 function watchList() {
   const refresh = () => {
+    // 数据源已合并（接口池 + DOM 卡片）：站点自己增删卡片不会把补足到的数量冲掉
     lastJobs = collectJobs()
     matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
     applyVisualFilter()
     panel.setStatus(`${usingApi ? '接口' : '卡片'}数据：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
-    panel.setStats(lastJobs.length, matchedJobs.length)
+    panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
+    // 开了筛选时结果会被压少，滚出新卡片就顺手补回目标值。
+    // 没开筛选时所有卡片都通过，不需要替用户自动滚动页面。
+    if (hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
+      clearTimeout((watchList as any).__fill)
+      ;(watchList as any).__fill = setTimeout(() => {
+        // 上一轮补足已经"到底"过，且页面上卡片没变多，就别再滚一次（避免反复空转）
+        if (fillExhaustedAt >= readCards().length) return
+        void autoFillToTarget('站点新增卡片')
+      }, 800)
+    }
   }
+  /**
+   * MutationObserver 只看「有没有新的职位卡片」。
+   *
+   * 之前的实现监听 body 全子树并无限防抖刷新，有两个坏处：
+   *   1. 扩展自己隐藏卡片也属于 DOM 变动 → 反复触发 refresh → 无限抖动
+   *   2. 每次 refresh 都走 applyVisualFilter()，而它会先 restoreAllCards()，
+   *      于是「站点一有风吹草动，隐藏就被清掉再重算」，表现为筛选结果闪烁/丢失
+   * 现在只有当卡片数量真的变化时才刷新。
+   */
+  let lastCardCount = -1
   const observer = new MutationObserver(() => {
+    const n = readCards().length
+    if (n === lastCardCount) return
+    lastCardCount = n
     clearTimeout((watchList as any).__t)
     ;(watchList as any).__t = setTimeout(refresh, 400)
   })
   observer.observe(document.body, { childList: true, subtree: true })
+  lastCardCount = readCards().length
   refresh()
 }
 
-/** 右侧详情面板结构（从真实页面校准） */
+/** 把通过筛选的职位补到「目标职位数」，并刷新统计与 DOM 隐藏。
+ *  三个入口（刷新 / 保存并筛选 / 站点新增卡片）共用同一套收尾逻辑。 */
+async function autoFillToTarget(why: string): Promise<boolean> {
+  if (!matchingAutoFillAllowed()) return false
+  const total = cfg.targetCount || 20
+  if (matchedJobs.length >= total) return false
+  const before = matchedJobs.length
+  const cardsBefore = readCards().length
+  panel.setStatus(`找到 ${before} 个符合条件，尝试加载到 ${total} 个…（${why}）`)
+  try {
+    await loadMoreJobs(20, total)
+  } finally {
+    // loadMoreJobs 内部会 showAllCards() 把隐藏全部还原（为了制造滚动空间）。
+    // 无论它是正常结束、提前 break 还是中途抛错，这里都必须重新把筛选结果藏回去，
+    // 否则用户会看到"刚筛选完卡片全露出来了"，要等下一次 watchList 触发才恢复。
+    lastJobs = collectJobs()
+    matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+    applyVisualFilter()
+    panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
+    panel.setStatus(`已自动加载：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+  }
+  panel.log(`自动补足（${why}）：${before} → ${matchedJobs.length} 个（目标 ${total}）`, 'info')
+  // 记下"这次补足失败时页面上有多少卡片"，watchList 用来看是否需要再滚一次
+  fillExhaustedAt = matchedJobs.length >= total ? 0 : Math.max(cardsBefore, readCards().length)
+  return true
+}
+
+/**
+ * 页面选择器（**在已登录的真实页面上逐个计数核对得出**，不是从 CSS 推测）。
+ *
+ * 实测（www.zhipin.com/web/geek/jobs，15 张卡片时）：
+ *   .job-detail-box 1 ✅   .op-btn-chat 1 ✅   .job-card-box 15 ✅   .job-card-wrap 15 ✅
+ *   .job-detail-card 0 ❌  .btn-sure 0 ❌      .job-card-wrapper 0 ❌  .job-card-left 0 ❌
+ *
+ * 真实层级：.card-area > .job-card-wrap > .job-card-box > .job-info
+ *   详情：.job-detail-box > .job-detail-header > .job-detail-op > .op-btn.op-btn-chat
+ * 每个字段多候选兜底，站点改版时不会一次全哑。
+ */
 const D = {
-  box: '.job-detail-box',
-  apply: '.op-btn.op-btn-chat',
-  salary: '.job-salary',
+  box: '.job-detail-box, .job-detail-card, .detail-box',
+  apply: '.op-btn.op-btn-chat, .op-btn-chat, .btn-sure, .btn-sure-v2',
+  salary: '.job-salary, .salary',
   bossOnline: '.boss-online-tag',
-  bossName: '.job-boss-info .name',
+  bossName: '.job-boss-info .name, .boss-info .name',
   bossAttr: '.boss-info-attr',
   address: '.job-address-desc',
-  desc: '.job-detail-body .desc',
+  desc: '.job-detail-body .desc, .desc',
+  active: '.boss-active-time, .boss-online-tag',
+  labels: '.job-label-list li, .job-detail-body .tag-list li',
+  title: '.job-detail-info .job-name, .job-name',
+}
+
+/** 在详情面板里找第一个命中的元素（多候选按顺序兜底） */
+function qIn<T extends HTMLElement = HTMLElement>(root: ParentNode | null, sel: string): T | null {
+  if (!root) return null
+  for (const one of sel.split(',')) {
+    const el = root.querySelector<T>(one.trim())
+    if (el) return el
+  }
+  return null
 }
 
 function findDetailApplyBtn(): HTMLElement | null {
-  const byClass = document.querySelector<HTMLElement>(`${D.box} ${D.apply}, ${D.apply}`)
-  if (byClass) return byClass
-  const nodes = document.querySelectorAll<HTMLElement>('a, button, [role="button"]')
-  for (const el of nodes) {
-    const t = (el.textContent ?? '').trim()
-    if (t === '立即沟通' || t.includes('立即沟通')) return el
+  // 只认右侧详情面板里的「立即沟通」，避免误点左侧卡片上的同名按钮
+  const box = detailPanel()
+  if (box) {
+    const byClass = qIn(box, D.apply)
+    // 真实页面上按钮文案就是「立即沟通」；类名兜底之外再按文案找一次
+    const byText = Array.from(box.querySelectorAll<HTMLElement>('a, button, [role="button"], .btn-sure, .btn-v2')).find(
+      (el) => /立即沟通|继续沟通/.test(el.textContent ?? ''),
+    )
+    const hit = byClass ?? byText
+    if (hit) return hit
   }
-  return null
+  // 详情面板还没渲染时才退化为全局查找（BOSS 未登录时会用登录按钮替代）
+  return qIn(document, D.apply)
 }
 
 /** 右侧详情面板容器 */
@@ -410,18 +686,18 @@ function detailPanel(): HTMLElement | null {
 function readDetail() {
   const box = detailPanel()
   const text = box?.textContent ?? ''
-  const q = (sel: string) => box?.querySelector<HTMLElement>(sel)?.textContent?.trim() ?? ''
+  const q = (sel: string) => qIn(box, sel)?.textContent?.trim() ?? ''
   const salary = q(D.salary)
   const online = /在线/.test(q(D.bossOnline))
   const bossName = q(D.bossName)
   const bossAttr = q(D.bossAttr)
   const address = q(D.address)
   // 职位描述（用于排除关键词检查）
-  const desc = q('.desc') || q(D.desc)
-  // Boss 活跃细分：详情面板的 .boss-active-time（如"本周活跃"/"今日活跃"）
-  const activeEl = box?.querySelector<HTMLElement>('.boss-active-time')
+  const desc = q(D.desc)
+  // Boss 活跃细分：优先专门的活跃元素，其次在线标签，最后从整块文本里正则提取
+  const activeEl = qIn(box, D.active)
   const activeText =
-    activeEl?.textContent?.trim() ||
+    (activeEl && /活跃|在线/.test(activeEl.textContent ?? '') ? activeEl.textContent?.trim() : '') ||
     text.match(/刚刚活跃|今日活跃|昨日活跃|本周活跃|本月活跃|\d+\s*日内活跃|\d+\s*小时前活跃|\d+\s*天前活跃/)?.[0] ||
     (online ? '在线' : '')
   return {
@@ -433,24 +709,63 @@ function readDetail() {
     bossTitle: bossAttr,
     address,
     desc,
-    jobLabels: Array.from(box?.querySelectorAll('.job-label-list li') ?? []).map((n) => n.textContent?.trim() ?? '').filter(Boolean),
+    jobLabels: Array.from(box?.querySelectorAll(D.labels) ?? []).map((n) => n.textContent?.trim() ?? '').filter(Boolean),
     headhunter: /猎头/.test(text),
     goldMedal: /金牌/.test(text),
   }
 }
 
 /** 点击卡片选中，右侧详情面板随之加载该职位 */
+/**
+ * 点击卡片让右侧详情切到该职位（主从页的"选中"行为）。
+ *
+ * 关键：整张卡片往往就是 <a href="/job_detail/xxx.html">，直接 click() 会导航到详情页，
+ * 之后的「立即沟通」就会发生在详情页上、点完顺势进入聊天界面。
+ * 所以这里优先点"卡片内部的非链接区域"（信息区），并兜底拦截所有 <a> 的默认导航。
+ */
 async function selectCard(job: JobItem) {
-  // 优先点击卡片本体（主从页选择），其次职位名
-  const target = job.element?.querySelector<HTMLElement>('.job-card-wrap') ?? job.element
-  if (target) clickNoNav(target)
-  await sleep(700)
+  const el = job.element as HTMLElement | undefined
+  if (!el) return
+
+  // 优先点卡片里的信息区（真实结构 .job-info），避免点到整卡链接触发详情页跳转
+  const inner =
+    el.querySelector<HTMLElement>('.job-info') ??
+    el.querySelector<HTMLElement>('.job-card-left') ??
+    el.querySelector<HTMLElement>('.job-card-wrap') ??
+    el.querySelector<HTMLElement>('.job-card-body') ??
+    el
+
+  // 无论点到哪个后代 <a>，都拦掉导航（捕获阶段，只生效一次）
+  const stopNav = (e: Event) => e.preventDefault()
+  const anchors = Array.from(inner.querySelectorAll<HTMLAnchorElement>('a[href]'))
+  for (const a of anchors) {
+    if (!/^javascript:/i.test(a.href)) a.addEventListener('click', stopNav, { capture: true })
+  }
+  if (inner.tagName === 'A' && !/^javascript:/i.test((inner as HTMLAnchorElement).href)) {
+    inner.addEventListener('click', stopNav, { capture: true })
+  }
+
+  try {
+    inner.click()
+  } finally {
+    // 立刻解绑，避免影响后续真实导航
+    for (const a of anchors) a.removeEventListener('click', stopNav, { capture: true } as any)
+    if (inner.tagName === 'A') inner.removeEventListener('click', stopNav, { capture: true } as any)
+  }
+
+  await sleepAtLeast(700)
 }
 
 /** 预热 Boss 活跃：逐个打开职位详情，读 `.boss-active-time`，让列表统计也按 Boss 活跃过滤（较慢） */
 async function warmUpBossActive() {
   const jobs = matchedJobs.slice()
   for (let i = 0; i < jobs.length; i++) {
+    // 预热是逐个点详情、每个 1.5 秒，几十个职位要好几分钟；
+    // 用户点「终止」时必须能中断，否则会看起来完全没反应。
+    if (stopRequested) {
+      panel?.log('已停止预热', 'warn')
+      break
+    }
     const job = jobs[i]
     panel?.setStatus(`预热 Boss 活跃 ${i + 1}/${jobs.length}：${job.jobName}`)
     if (!job.element) continue
@@ -465,13 +780,13 @@ async function warmUpBossActive() {
     if (detail.desc) job.jobDescription = detail.desc
     if (detail.jobLabels?.length) job.jobLabels = detail.jobLabels
     // 放慢节奏，降低触发风控的概率
-    await sleep(1500)
+    await sleepAtLeast(1500)
   }
   panel?.setStatus('预热完成，重新筛选…')
   // 重新过滤（现在 activeLevel 已知，Boss 活跃过滤会真正生效）
   matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
   applyVisualFilter()
-  panel?.setStats(lastJobs.length, matchedJobs.length)
+  panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
 }
 
 /** 筛选后把右侧详情同步到第一个通过的职位，避免左右对不上 */
@@ -496,6 +811,16 @@ function intervalMs(interval: TimeInterval): number {
 /** 对单个职位：选卡→读详情→按详情过滤→点「立即沟通」，返回是否成功投递 */
 async function applyOne(job: JobItem): Promise<boolean> {
   await selectCard(job)
+  // 选卡有可能（被站点/误点）把页面带走，先确认还在列表页再读详情，
+  // 否则 readDetail() 读到的是聊天页的空白，会把整批投递废掉。
+  if (!document.querySelector(CARD_SELECTORS)) {
+    await ensureOnListPage()
+    if (!document.querySelector(CARD_SELECTORS)) {
+      enqueueRetry(job, '选卡后页面离开了列表页')
+      panel.log(`选卡后页面已离开列表页，本条跳过: ${job.jobName}`, 'warn')
+      return false
+    }
+  }
   const detail = readDetail()
   if (!detail.salary && !detail.activeText && !detail.online) {
     enqueueRetry(job, '详情未加载')
@@ -531,6 +856,10 @@ async function applyOne(job: JobItem): Promise<boolean> {
   clickNoNav(btn)
   // BOSS 点「立即沟通」后会弹提示框，需处理：发送成功/确认发送/已达沟通上限
   const dialogRes = await handleSendDialog()
+
+  // 兜底：万一页面仍被带到聊天页/详情页，退回列表页继续，否则后续全部失效
+  await ensureOnListPage()
+
   if (dialogRes.type === 'limit') {
     panel.log(`已达今日沟通上限（${dialogRes.text}），停止批量投递`, 'warn')
     stopRequested = true
@@ -553,54 +882,249 @@ function enqueueRetry(job: JobItem, reason: string) {
   }
 }
 
+/**
+ * 投递期间的导航护栏。
+ *
+ * BOSS 列表页是 SPA，某些操作会把页面带到 /web/geek/chat。一旦离开列表页，
+ * 卡片引用全部失效，后续投递就废了。光靠投递后 ensureOnListPage() 不够，
+ * 因为 SPA 跳转是异步的，检查时可能还没发生。
+ *
+ * 实测发现光拦 <a href> 的点击**不够**：BOSS 有些跳转是直接改 history / location 的。
+ * 所以这里同时接管三处：
+ *   1. 点击 <a href="/web/geek/chat...">（事件捕获阶段 preventDefault）
+ *   2. history.pushState / replaceState（SPA 路由跳转会走这里）
+ *   3. location.assign / replace（硬跳转）
+ * 投递开始时安装，结束时原样还原。
+ */
+let navGuardActive = false
+let navGuardClick: ((e: Event) => void) | null = null
+let savedPushState: typeof history.pushState | null = null
+let savedReplaceState: typeof history.replaceState | null = null
+let savedOpen: typeof window.open | null = null
+let savedLocAssign: ((url: string | URL) => void) | null = null
+let savedLocReplace: ((url: string | URL) => void) | null = null
+
+const isChatUrl = (u: unknown): boolean => /\/web\/geek\/chat/i.test(String(u ?? ''))
+
+function installNavGuard() {
+  if (navGuardActive) return
+  navGuardActive = true
+
+  // 1) 点击链接
+  navGuardClick = (e: Event) => {
+    const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+    if (!a) return
+    const href = a.getAttribute('href') ?? ''
+    if (isChatUrl(href)) {
+      e.preventDefault()
+      e.stopPropagation()
+      panel.log('已拦截一次跳转聊天页的点击（投递期间保持停留在列表页）', 'warn')
+    }
+  }
+  document.addEventListener('click', navGuardClick, true)
+
+  // 2) SPA 路由：pushState / replaceState
+  savedPushState = history.pushState
+  savedReplaceState = history.replaceState
+  history.pushState = function (this: History, data: any, unused: string, url?: string | URL | null) {
+    if (isChatUrl(url)) {
+      panel.log('已拦截一次 SPA 跳转聊天页（pushState）', 'warn')
+      return
+    }
+    return savedPushState!.call(this, data, unused, url as any)
+  } as typeof history.pushState
+  history.replaceState = function (this: History, data: any, unused: string, url?: string | URL | null) {
+    if (isChatUrl(url)) {
+      panel.log('已拦截一次 SPA 跳转聊天页（replaceState）', 'warn')
+      return
+    }
+    return savedReplaceState!.call(this, data, unused, url as any)
+  } as typeof history.replaceState
+
+  // 3) window.open / location.assign / location.replace
+  //    实测 BOSS 某些职位（企业直招）点「立即沟通」会直接跳 /web/geek/chat?id=...
+  //    这不是弹窗按钮触发的，而是业务代码里自己做的跳转，必须在这里拦。
+  savedOpen = window.open
+  window.open = function (this: Window, url?: string | URL, ...rest: any[]) {
+    if (isChatUrl(url)) {
+      panel.log('已拦截一次跳转聊天页（window.open）', 'warn')
+      return null
+    }
+    return savedOpen!.call(this, url as any, ...rest)
+  } as typeof window.open
+  try {
+    savedLocAssign = location.assign.bind(location)
+    savedLocReplace = location.replace.bind(location)
+    location.assign = function (url: string | URL) {
+      if (isChatUrl(url)) {
+        panel.log('已拦截一次跳转聊天页（location.assign）', 'warn')
+        return
+      }
+      return savedLocAssign!(url as any)
+    } as typeof location.assign
+    location.replace = function (url: string | URL) {
+      // 注意：我们自己的 ensureOnListPage 也会用 location.replace 回列表，
+      // 这里只拦"去聊天页"的，回列表页的不拦。
+      if (isChatUrl(url)) {
+        panel.log('已拦截一次跳转聊天页（location.replace）', 'warn')
+        return
+      }
+      return savedLocReplace!(url as any)
+    } as typeof location.replace
+  } catch {
+    /* 某些浏览器不允许改写 location，忽略 */
+  }
+}
+
+function removeNavGuard() {
+  if (!navGuardActive) return
+  if (navGuardClick) document.removeEventListener('click', navGuardClick, true)
+  navGuardClick = null
+  if (savedPushState) history.pushState = savedPushState
+  if (savedReplaceState) history.replaceState = savedReplaceState
+  if (savedOpen) window.open = savedOpen
+  if (savedLocAssign) {
+    try { location.assign = savedLocAssign as typeof location.assign } catch { /* 忽略 */ }
+  }
+  if (savedLocReplace) {
+    try { location.replace = savedLocReplace as typeof location.replace } catch { /* 忽略 */ }
+  }
+  savedPushState = null
+  savedReplaceState = null
+  savedOpen = null
+  savedLocAssign = null
+  savedLocReplace = null
+  navGuardActive = false
+}
+
+/**
+ * 兜底保障：确认仍在职位列表页。
+ *
+ * 投递过程中若因为任何原因（弹窗按钮、卡片链接、站点自身跳转）离开了列表页，
+ * 后续的卡片选择、筛选、统计都会失效。这里用 history.back() 回到列表并等待就绪。
+ */
+async function ensureOnListPage() {
+  const onList = () =>
+    !!document.querySelector(CARD_SELECTORS) || !!document.querySelector('.job-detail-box')
+
+  if (onList()) return
+
+  // 有历史就退回去；没有就直接回列表 URL
+  if (history.length > 1) {
+    history.back()
+  } else {
+    // 用 replace 覆盖当前历史项，避免留下聊天页这条记录
+    location.replace('/web/geek/jobs')
+    return
+  }
+
+  // 最多等 3 秒让列表重新渲染（按真实耗时算，后台被节流也不会提前放弃）
+  const deadline = performance.now() + 3000
+  while (performance.now() < deadline) {
+    await sleep(200)
+    if (onList()) {
+      panel.log('已从非列表页返回，继续投递', 'warn')
+      return
+    }
+  }
+  // history.back() 没回来（可能站点把历史清了）：硬跳回列表页，别直接放弃
+  panel.log('history.back() 未能回到列表页，改为直接跳回 /web/geek/jobs', 'warn')
+  location.replace('/web/geek/jobs')
+}
+
 interface DialogResult {
   type: 'sent' | 'confirm' | 'limit' | 'none'
   text: string
 }
 
+/** 等「立即沟通」结果弹窗的最长时间（按真实耗时计，不受后台节流放大） */
+const DIALOG_WAIT_MS = 3000
+
 /**
- * 处理点「立即沟通」后的弹窗，区分三种结果：
- * - 'sent'    ："已向BOSS发送消息" → 点「留在此页」关闭（消息已发出）
+ * 处理点「立即沟通」后的弹窗，区分四种结果：
+ * - 'sent'    ：消息已发出（识别到"已向BOSS发送消息"）→ 只关闭弹窗，绝不点跳转按钮
  * - 'confirm' ：真确认弹窗（问是否发送）→ 点「确定/发送」
  * - 'limit'   ：已达今日沟通上限（温馨提醒剩余次数）→ 停止投递
  * - 'none'    ：无弹窗
- * 必须限定在弹窗容器内找按钮，避免误点到页面上常驻的「立即沟通」。
+ *
+ * ！重要！BOSS 的成功弹窗上通常并列两个按钮：
+ *     「继续沟通」→ 会跳到聊天页（/web/geek/chat），批量投递时绝对不能点；
+ *     「留在此页」→ 只关掉弹窗，页面留在列表。
+ *   早期版本误把「继续沟通」也当成"确认已发送"点掉了，
+ *   结果每投递一个就跳进聊天界面，批量流程直接中断。
  */
 async function handleSendDialog(): Promise<DialogResult> {
-  for (let i = 0; i < 15; i++) {
+  // 用真实耗时做截止，而不是"轮询 15 次"：
+  // 后台标签页里每次 sleep(200) 会被拉长到约 1s，按次数算等于把等待窗口从 3s 放大到 15s。
+  const deadline = performance.now() + DIALOG_WAIT_MS
+  while (performance.now() < deadline) {
     await sleep(200)
     const dialog = findDialogContainer()
     if (!dialog) continue
     const text = (dialog.textContent ?? '')
+
     // A. 已达今日沟通上限（温馨提醒剩余机会）→ 点「好」关闭，停止投递
     if (/剩余的沟通机会|今日已与\d+位BOSS沟通|沟通机会|次数用完|已达.*上限/.test(text)) {
       const okBtn = findBtnIn(dialog, /^好$|知道了|^确定$/)
-      if (okBtn) { panel.log('已达沟通上限，点「好」关闭提醒', 'warn'); okBtn.click() }
+      if (okBtn) {
+        panel.log('已达沟通上限，点「好」关闭提醒', 'warn')
+      }
       return { type: 'limit', text: text.slice(0, 80) }
     }
-    // B. "已向BOSS发送消息" → 点「留在此页」关闭
-    const stayBtn = findBtnIn(dialog, /留在此页|留在本页|留在页面/)
-    if (stayBtn) {
-      panel.log('已向BOSS发送消息，点「留在此页」关闭', 'ok')
-      stayBtn.click()
+
+    // B. 成功弹窗：优先点「留在此页」；没有就找关闭类按钮；都没有就按 ESC 关掉。
+    //    无论如何都不点「继续沟通」——那是跳聊天页。
+    if (/已向BOSS发送消息|发送成功|已发送/.test(text)) {
+      const stayBtn = findBtnIn(dialog, /留在此页|留在本页|留在页面|^不了|^不用了|取消/)
+      if (stayBtn) {
+        stayBtn.click()
+        panel.log('已发送消息，点「留在此页」关闭弹窗', 'ok')
+      } else {
+        // 兜底：不点任何按钮，用 ESC 关弹窗，避免误触跳转
+        closeDialogByEsc(dialog)
+        panel.log('已发送消息（未找到「留在此页」，用 ESC 关闭）', 'ok')
+      }
       return { type: 'sent', text }
     }
+
     // C. 确认发送类弹窗 → 点「确定/确认/发送」
-    const confirmBtn = findBtnIn(dialog, /^确定$|^确认$|^发送$|就这样|好的/)
-    if (confirmBtn) {
+    //    注意排除「继续沟通」这类跳转按钮
+    const confirmBtn = findBtnIn(dialog, /^确定$|^确认$|^发送$|就这样|^好的$/)
+    if (confirmBtn && !/继续沟通|去沟通|进入聊天/.test(confirmBtn.textContent ?? '')) {
       panel.log(`检测到确认弹窗，点击「${confirmBtn.textContent?.trim()}」`, 'info')
       confirmBtn.click()
       return { type: 'confirm', text }
     }
-    // D. 弹窗只有"继续沟通"（跳转聊天）→ 消息已发
-    const goChat = findBtnIn(dialog, /继续沟通/)
-    if (goChat) {
-      panel.log('已发送消息（继续沟通入口）', 'ok')
-      goChat.click()
-      return { type: 'sent', text }
+
+    // D. 只剩「继续沟通」这种跳转按钮：说明消息其实已经发出，
+    //    此时**不点击**，直接关闭弹窗并记为成功，避免跳进聊天页。
+    if (/继续沟通|去沟通|进入聊天/.test(text)) {
+      const goChat = findBtnIn(dialog, /继续沟通|去沟通|进入聊天/)
+      if (goChat) {
+        closeDialogByEsc(dialog)
+        panel.log('已发送消息（存在「继续沟通」跳转，已拦截，不跳转）', 'ok')
+        return { type: 'sent', text }
+      }
     }
   }
   return { type: 'none', text: '' }
+}
+
+/** 用 ESC 关闭弹窗：不依赖具体按钮，避免误点跳转 */
+function closeDialogByEsc(dialog: HTMLElement) {
+  try {
+    const target =
+      dialog.querySelector<HTMLElement>('input, textarea, [contenteditable="true"]') ??
+      dialog ??
+      document.body
+    target.focus?.()
+    for (const type of ['keydown', 'keyup'] as const) {
+      document.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }))
+      target.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }))
+    }
+  } catch {
+    /* 关闭失败不影响投递判定 */
+  }
 }
 
 /** 找到当前可见的弹窗容器（含"已向BOSS发送消息"/"温馨提醒-沟通机会"等的层） */
@@ -625,38 +1149,72 @@ function findBtnIn(container: HTMLElement, re: RegExp): HTMLElement | null {
   }) ?? null
 }
 
-/** 直接用接口拉第 2 页及以后的职位（绕过页面只渲染约 300 张卡的限制） */
-async function fetchJobApiPages(maxPages: number): Promise<boolean> {
+/**
+ * 直接用接口拉第 2 页及以后的职位（绕过页面只渲染约 300 张卡的限制）。
+ *
+ * shouldStop：每拉完一页回调一次，返回 true 就提前收工。
+ *   —— 目标数量早就够了还一路拉到底，会把"到底/无新增"的判定提前触发，
+ *   反而让后面真正需要的"滚动加载"以为没货了。
+ */
+async function fetchJobApiPages(
+  maxPages: number,
+  shouldStop?: () => boolean,
+): Promise<boolean> {
   const rec = capturedNet.find((r) => /recommend\/job\/list|job\/list\.json|search\/joblist\.json|joblist\.json/i.test(String(r.url)))
   if (!rec) return false
   const origin = location.origin
-  let base = String(rec.url)
-  base = base.startsWith('http') ? base : origin + base
-  base = base.replace(/[?&]page=\d+/, '').replace(/[?&]_=\d+/, '')
+  const rawUrl = String(rec.url)
   let got = false
+  // 连着几页全是重复才认"到顶"：BOSS 相邻页之间常有重叠，单页重复不代表后面没有新职位
+  let dupStreak = 0
   for (let p = 2; p <= maxPages; p++) {
     try {
-      const url = `${base}${base.includes('?') ? '&' : '?'}page=${p}&_=${Date.now()}`
-      const res = await fetch(url)
+      // 关键：用 URL 对象规范化拼接。
+      // 以前是字符串拼 `${base}?page=`，遇到形如
+      //   .../list.json?page=1&pageSize=15&city=...
+      // 这种把参数挂在路径后面、或站点自己拼错成 `list.json&pageSize=...` 的 URL，
+      // 会拼出 `list.json&pageSize=15...?page=2` 这种非法地址 —— 请求直接失败/返回 HTML，
+      // 于是「查看更多」永远拉不到数据。
+      const u = new URL(rawUrl.startsWith('http') ? rawUrl : origin + rawUrl)
+      u.searchParams.set('page', String(p))
+      u.searchParams.set('_', String(Date.now()))
+      const url = u.toString()
+      // 职位列表接口同样要带签名头，否则会被判非法、返回登录页 HTML
+      const res = await fetch(url, { credentials: 'include', headers: signedHeaders() })
+      const ct = res.headers.get('content-type') ?? ''
+      if (!ct.includes('json')) {
+        // 拿到了 HTML（多半是安全校验/登录页），继续翻也没意义
+        panel.log(`第 ${p} 页返回的不是 JSON（可能是安全校验），停止接口翻页`, 'warn')
+        break
+      }
       const data = await res.json()
       const list = data?.zpData?.jobList
       if (Array.isArray(list) && list.length) {
         const exists = new Set(apiJobList.map((j) => j.encryptJobId))
         const fresh = list.filter((j) => j.encryptJobId && !exists.has(j.encryptJobId))
         if (!fresh.length) {
-          // 整页都是重复：翻页已到头/空转，停止，避免死循环
-          panel.log(`第 ${p} 页无新增（已到池子上限），停止翻页`, 'info')
-          break
+          dupStreak++
+          if (dupStreak >= 3) {
+            panel.log(`连续 ${dupStreak} 页无新增（已到池子上限），停止翻页`, 'info')
+            break
+          }
+        } else {
+          dupStreak = 0
+          apiJobList = apiJobList.concat(fresh)
+          got = true
+          panel.log(`接口拉取第 ${p} 页，新增 ${fresh.length} 个（累计 ${apiJobList.length}）`, 'ok')
         }
-        apiJobList = apiJobList.concat(fresh)
-        got = true
-        panel.log(`接口拉取第 ${p} 页，新增 ${fresh.length} 个（累计 ${apiJobList.length}）`, 'ok')
       } else {
         panel.log('接口此页为空，停止拉取', 'info')
         break
       }
       if (!data?.zpData?.hasMore) {
         panel.log('接口已到底(hasMore=false)', 'info')
+        break
+      }
+      // 拉完这页先合并统计，再问"还要不要继续拉"
+      if (got && shouldStop?.()) {
+        panel.log(`接口拉到第 ${p} 页已够用，停止翻页`, 'info')
         break
       }
     } catch (e) {
@@ -668,40 +1226,63 @@ async function fetchJobApiPages(maxPages: number): Promise<boolean> {
   return got
 }
 
+/** 只补接口页、不碰 DOM：给批量投递前用。
+ *  滚动加载会销毁/重建卡片，投递前滚一圈等于把候选的 element 全部换掉。 */
+async function fetchMoreJobsForDelivery(pages: number) {
+  if (pages <= 0) return
+  const target = matchedJobs.length + pages * 15
+  await fetchJobApiPages(Math.max(1, pages), () => matchedJobs.length >= target)
+}
+
 /** 加载更多职位：优先直接用接口拉更多页；接口没数据再回退到真实滚动加载。
  *  targetCount > 0 时一直加载，直到通过筛选的职位数达标或到底。 */
 async function loadMoreJobs(pages: number, targetCount = 0) {
   const wantMore = targetCount > 0 ? targetCount : pages
-  // 1) 直接用接口拉页（能超过页面 300 张卡的渲染上限）
-  await fetchJobApiPages(Math.max(30, Math.ceil(wantMore / 15) + 2))
-  if (targetCount > 0 && matchedJobs.length >= targetCount) {
+  // 1) 直接用接口拉页（能超过页面 300 张卡的渲染上限）。
+  //    每页拉完重建一次统计，够了就停，不再一路拉到底。
+  const reached = () => targetCount > 0 && matchedJobs.length >= targetCount
+  await fetchJobApiPages(Math.max(30, Math.ceil(wantMore / 15) + 2), reached)
+  if (reached()) {
     panel.log(`已通过接口凑够 ${matchedJobs.length} 个达标`, 'ok')
     return
   }
-  // 2) 回退：真实滚动加载
+  // 2) 回退：真实滚动加载。
+  //    但只有「页面上卡片不够多」时才值得滚 —— 页面卡片本来就有很多、
+  //    只是被筛选藏起来了，滚动解决不了问题，反而要 showAllCards() 把界面弄乱。
+  const cardCount = readCards().length
+  if (cardCount >= Math.max(targetCount || 20, 30)) {
+    panel.log(`页面已有 ${cardCount} 张卡片，接口也没更多数据，不再滚动加载`, 'info')
+    return
+  }
   const maxScroll = pages > 0 ? pages : targetCount > 0 ? 30 : 1
   let lastMatched = -1
-  for (let i = 0; i < maxScroll && (!targetCount || matchedJobs.length < targetCount); i++) {
-    const beforeDom = document.querySelectorAll(CARD_SELECTORS).length
-    showAllCards()
-    await scrollOnce()
-    lastJobs = buildFromCards()
-    matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+  try {
+    for (let i = 0; i < maxScroll && (!targetCount || matchedJobs.length < targetCount); i++) {
+      const beforeDom = document.querySelectorAll(CARD_SELECTORS).length
+      showAllCards()
+      await scrollOnce()
+      lastJobs = collectJobs()
+      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      applyVisualFilter()
+      panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
+      panel?.setStatus(`加载中：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+      const afterDom = document.querySelectorAll(CARD_SELECTORS).length
+      if (afterDom <= beforeDom) {
+        panel.log(`没有更多可加载的职位了（卡片 ${beforeDom} → ${afterDom}，未新增）`, 'info')
+        break
+      }
+      // 连续两轮匹配数不再增长，视为到底，避免死循环
+      if (matchedJobs.length === lastMatched) {
+        panel.log('匹配数不再增长，停止加载', 'info')
+        break
+      }
+      lastMatched = matchedJobs.length
+      panel.log(`已加载更多：卡片 ${beforeDom} → ${afterDom}，保留 ${matchedJobs.length} 个`, 'info')
+    }
+  } finally {
+    // 循环里每轮都会 showAllCards()，退出时必须按当前筛选重新隐藏，
+    // 否则中途 break/抛错后页面会停留在"全部可见"的状态。
     applyVisualFilter()
-    panel?.setStats(lastJobs.length, matchedJobs.length)
-    panel?.setStatus(`加载中：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
-    const afterDom = document.querySelectorAll(CARD_SELECTORS).length
-    if (afterDom <= beforeDom) {
-      panel.log(`没有更多可加载的职位了（卡片 ${beforeDom} → ${afterDom}，未新增）`, 'info')
-      break
-    }
-    // 连续两轮匹配数不再增长，视为到底，避免死循环
-    if (matchedJobs.length === lastMatched) {
-      panel.log('匹配数不再增长，停止加载', 'info')
-      break
-    }
-    lastMatched = matchedJobs.length
-    panel.log(`已加载更多：卡片 ${beforeDom} → ${afterDom}，保留 ${matchedJobs.length} 个`, 'info')
   }
 }
 
@@ -712,7 +1293,12 @@ async function scrollOnce() {
   // 关键：先恢复所有卡片可见，否则被筛选隐藏的卡片会压缩列表高度、让页面失去滚动空间，无法触发加载
   showAllCards()
   // 给 DOM 一点时间反映新高度（恢复 display 后 scrollHeight 才会更新）
-  await sleep(150)
+  await sleepAtLeast(150)
+  if (!listScrollable()) {
+    // 恢复隐藏后连一屏高都撑不满：站点还没渲染出更多卡片，这时候滚也没用
+    panel.log('列表没有可滚动空间（可能已被站点虚拟化/到底），本次跳过滚动', 'info')
+    return
+  }
   // 判定滚到哪：优先 window（整页列表是 window 滚动），失败再找内部可滚容器
   let useWindow = true
   let container: HTMLElement = document.documentElement
@@ -745,7 +1331,7 @@ async function scrollOnce() {
       container.scrollTop = target
       container.dispatchEvent(new WheelEvent('wheel', { deltaY: stepPx, bubbles: true, cancelable: true }))
     }
-    await sleep(260)
+    await sleepAtLeast(260)
   }
 
   // 兜底：把 window 和所有候选列表容器都滚到底，并派发 wheel，防止选择器没命中滚动容器
@@ -753,7 +1339,7 @@ async function scrollOnce() {
   dispatchWheel()
   const listEls = document.querySelectorAll<HTMLElement>('.page-job-wrapper, .job-list-wrapper, .recommend-list, .job-list-container, .job-primary-list')
   for (const el of listEls) { el.scrollTop = el.scrollHeight; try { el.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true, cancelable: true })) } catch {} }
-  await sleep(2200)
+  await sleepAtLeast(2200)
 }
 
 function scrollHeightOf(useWindow: boolean, c: HTMLElement): number {
@@ -789,31 +1375,167 @@ async function waitIfPaused() {
   }
 }
 
+/** 可中断的等待：分片检查 stopRequested，点了「终止」立刻返回。
+ *  批量投递的轮次间隔默认 60s，用整段 sleep 会让"终止"看起来毫无反应。 */
+async function sleepInterruptible(ms: number) {
+  const t0 = performance.now()
+  while (performance.now() - t0 < ms && !stopRequested) {
+    await sleep(Math.min(250, ms - (performance.now() - t0)))
+  }
+}
+
+/**
+ * 投递期间的招呼语管理（方案 A：整批只设置一次）。
+ *
+ * 列表页点「立即沟通」发出的是**账号里预设的招呼语**，弹窗只有展示没有输入框，
+ * 所以要发自定义内容只能先改账号设置。
+ *
+ * 但实测服务端对 custom/saveV2 有频率限制：连续写 3~4 次后会返回 code:0
+ * 却**静默不生效**（等 60s 仍未恢复）。因此绝不能每个职位都写一次，
+ * 正确做法是：整批投递前写 1 次、结束后写回原来那条，全程只用 2 次写入。
+ *
+ * 代价：模板变量只能按**第一条职位**渲染一次，无法逐条变成不同公司名。
+ * 面板里已就此给出说明。
+ */
+let savedGreeting: GreetingState | null = null
+/** 投递开始前的招呼语原文（我方留存，服务端那条会被我们的写入覆盖） */
+let savedGreetingText = ''
+/** 当前自定义招呼语记录的 templateId（写接口必须带，否则"假成功"） */
+let greetingTemplateId: number | null = null
+let greetingApplied = false
+
+/** 整批投递前设置一次招呼语；返回实际写入的文本，失败返回空串 */
+async function applyGreetingOnce(firstJob?: JobItem): Promise<string> {
+  const tpl = (cfg.greetTemplate || '').trim()
+  if (!cfg.autoGreet || !tpl) return ''
+  const text = renderGreeting(tpl, {
+    jobName: firstJob?.jobName,
+    company: firstJob?.company,
+    bossName: firstJob?.bossName,
+    salary: firstJob?.salaryDesc,
+  })
+  // 招呼语有长度上限，过长直接放弃自定义，免得被拒还拖慢流程
+  if (!text || text.length > 200) return ''
+  // 必须带上当前自定义记录的 templateId，传空会"假成功"（返回 code:0 但不生效）
+  const res = await writeCustomGreetingVerified(text, savedGreeting?.templateId ?? null)
+  if (!res.ok) return ''
+  if (res.templateId) greetingTemplateId = res.templateId
+  greetingApplied = true
+  return text
+}
+
+/** 恢复投递前的招呼语设置 */
+async function restoreGreetingOnce() {
+  if (!greetingApplied) return
+  try {
+    // 用我方留存的原文写回。服务端那条自定义记录在投递过程中已被我们覆盖，
+    // 所以不能再拿服务端的值当"原始值"。
+    const target = savedGreetingText
+    if (!target) {
+      panel.log('没有记录到原来的招呼语，跳过恢复', 'warn')
+      return
+    }
+    const ok = await writeCustomGreetingVerified(target, greetingTemplateId)
+    if (ok.ok) panel.log(`已恢复原来的打招呼语：${target.slice(0, 30)}…`, 'ok')
+    else panel.log('恢复打招呼语失败，请到「消息通知-设置打招呼语」手动检查', 'warn')
+  } catch {
+    panel.log('恢复打招呼语失败，请到「消息通知-设置打招呼语」手动检查', 'warn')
+  } finally {
+    greetingApplied = false
+    savedGreeting = null
+    savedGreetingText = ''
+  }
+}
+
 async function runBatch() {
   if (running) return
   running = true
   stopRequested = false
   paused = false
   panel.setRunning(true)
+  // 投递期间拦住跳聊天页的导航，避免 SPA 跳走后卡片全部失效
+  installNavGuard()
   try {
-    // 额外加载更多页
+    // 额外加载更多页：只补接口页，不滚动。
+    // 以前这里走 loadMoreJobs → scrollOnce，滚动会把卡片销毁重建，
+    // 顺带把统计（以及刚补足的数量）打回 DOM 上那十几个。
     if (cfg.schedule.loadPages > 0) {
       panel.setStatus('正在加载更多职位…')
-      await loadMoreJobs(cfg.schedule.loadPages)
+      await fetchMoreJobsForDelivery(cfg.schedule.loadPages)
+      lastJobs = collectJobs()
+      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      applyVisualFilter()
+      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
     }
     const excludedSet = new Set(cfg.excluded || [])
-    const candidates = (matchedJobs.length ? matchedJobs : lastJobs.filter((j) => passFilter(j, cfg).pass)).filter(
-      (j) => !excludedSet.has(j.key),
-    )
+    const allMatched = matchedJobs.length ? matchedJobs : lastJobs.filter((j) => passFilter(j, cfg).pass)
+    // 必须是页面上真有卡片、且卡片还在文档里的职位：
+    // 接口拉到的职位如果卡片还没渲染出来（element 为空），selectCard() 会直接 return，
+    // 接着 readDetail() 读到的就是"上一个职位"的详情 —— 那一下会投错人。
+    const withCard = allMatched.filter((j) => j.element && j.element.isConnected)
+    if (withCard.length < allMatched.length) {
+      panel.log(
+        `有 ${allMatched.length - withCard.length} 个职位还没有对应卡片，先跳过（可在页面上滚动出来后重试）`,
+        'warn',
+      )
+    }
+    const candidates = withCard.filter((j) => !excludedSet.has(j.key))
     const total = candidates.length
     panel.log(`开始批量投递，共 ${total} 个职位`, 'info')
+    if (!total) {
+      panel.setStatus('没有可投递的职位')
+      panel.log('候选职位都没有对应卡片，已中止。请先在页面上滚动一下让卡片渲染出来。', 'warn')
+      return
+    }
+
+    // 自定义招呼语：整批只设置一次（服务端对写接口有频率限制，逐条写会静默失效）
+    if (cfg.autoGreet && (cfg.greetTemplate || '').trim()) {
+      savedGreeting = await readGreeting()
+      if (savedGreeting) {
+        // 备份文本必须立刻在我方留一份：BOSS 的自定义招呼语按 userId 单条覆盖，
+        // 我们写一次就把原文顶掉了，事后再从服务端读回来的已经是自己写的内容。
+        savedGreetingText = savedGreeting.text || ''
+        panel.log(`原招呼语：${savedGreetingText || '(空)'}`, 'info')
+      } else {
+        panel.log('读不到当前招呼语设置，本次会尝试设置自定义但可能无法恢复', 'warn')
+      }
+      const applied = await applyGreetingOnce(candidates[0])
+      if (applied) {
+        panel.log(`本批统一使用自定义招呼语：${applied}`, 'ok')
+        if (/\{\{/.test(cfg.greetTemplate)) {
+          panel.log('提示：变量按第一条职位渲染，整批共用这一条内容', 'info')
+        }
+      } else {
+        panel.log('自定义招呼语设置失败，本次将发送 BOSS 里预设的招呼语', 'warn')
+      }
+    }
 
     // 分轮
     const rounds: JobItem[][] = []
     for (let i = 0; i < candidates.length; i += cfg.schedule.roundSize) {
       rounds.push(candidates.slice(i, i + cfg.schedule.roundSize))
     }
+    // 落盘本批进度：万一页面被站点强制跳走（整页重载），重载后能接着投
+    await saveProgress({
+      batchId: Date.now(),
+      queue: candidates.map((j) => j.key),
+      done: [],
+      sent: 0,
+      startedAt: Date.now(),
+      limit: cfg.deliveryLimit,
+    })
     let sent = 0
+    let processed = 0
+    const doneKeys: string[] = []
+    /** 把当前进度写回 storage（每投完一条调一次，成本很低） */
+    const persist = async () => {
+      const p = await loadProgress()
+      if (!p) return
+      p.done = doneKeys.slice()
+      p.sent = sent
+      await saveProgress(p)
+    }
+    let abortedByNav = false
     for (let ri = 0; ri < rounds.length; ri++) {
       await waitIfPaused()  // 暂停时停在此处，恢复/停止后继续
       if (stopRequested) {
@@ -829,23 +1551,54 @@ async function runBatch() {
       for (const job of round) {
         await waitIfPaused()
         if (stopRequested || sent >= cfg.deliveryLimit) break
+        panel.setProgress(processed, total)
+        // 招呼语已在整批开始前设置好，这里不再逐条改写（写接口有限流）
         const ok = await applyOne(job)
+        processed++
         if (ok) sent++
-        await sleep(intervalMs(cfg.schedule.itemInterval))
+        doneKeys.push(job.key)
+        // 每投完一条就落盘，页面被强制跳转时最多丢一条的进度
+        await persist()
+        // 如果页面在投递过程中被强制跳走（整页重载），当前页面上的 content script
+        // 即将被销毁，剩下的交给重载后的续投逻辑。这里先把自己标记为中断。
+        if (!document.querySelector(CARD_SELECTORS)) {
+          abortedByNav = true
+          panel.log('页面在投递中被站点跳转，已保存进度，稍后会自动续投', 'warn')
+          break
+        }
+        // 可中断的间隔等待：点了终止就立刻退出，不再傻等完整间隔
+        if (!stopRequested) await sleepInterruptible(intervalMs(cfg.schedule.itemInterval))
+      }
+      if (abortedByNav) break
+      // 内层 break 只跳出当前轮，这里必须再判一次，否则外层会继续跑完全部轮次
+      if (stopRequested || sent >= cfg.deliveryLimit) {
+        // 区分两种停止原因，别把"达到上限"也写成"已手动停止"
+        if (stopRequested) panel.log('已手动停止', 'warn')
+        break
       }
       if (ri < rounds.length - 1) {
         const wait = intervalMs(cfg.schedule.roundInterval)
         panel.log(`第 ${ri + 1} 轮完成，等待 ${Math.round(wait / 1000)}s 后下一轮`, 'info')
-        await sleep(wait)
+        await sleepInterruptible(wait)
+        if (stopRequested) {
+          panel.log('已手动停止', 'warn')
+          break
+        }
       }
     }
     panel.setStatus(`完成，共投递 ${sent} 个`)
     panel.log('批量投递完成', 'ok')
+    // 正常跑完 → 清掉进度，避免下次开页面被误续投
+    if (!abortedByNav) await saveProgress(null)
   } catch (e) {
     panel.log(`批量投递出错: ${(e as Error).message}`, 'warn')
     panel.setStatus('出错')
   } finally {
     running = false
+    // 拆掉导航护栏，恢复正常浏览
+    removeNavGuard()
+    // 无论正常结束、手动停止还是中途出错，都把招呼语恢复原样
+    await restoreGreetingOnce()
     panel.setRunning(false)
     panel.setPaused(false)
   }
@@ -854,27 +1607,33 @@ async function runBatch() {
 function init() {
   panel = new Panel({
     onRefresh: async () => {
+      if (markStaleIfNeeded()) return
       lastJobs = collectJobs()
       matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
       applyVisualFilter()
-      panel.setStats(lastJobs.length, matchedJobs.length)
+      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       panel.setStatus(`已刷新：共 ${lastJobs.length} 个，筛选后 ${matchedJobs.length} 个`)
-      // 筛选开启且通过数未达目标时，自动多抓几页填满到目标数
-      const total = cfg.targetCount || 20
-      if (hasActiveFilter(cfg) && matchedJobs.length < total && matchingAutoFillAllowed()) {
-        panel.setStatus(`找到 ${matchedJobs.length} 个符合条件，尝试加载到 ${total} 个…`)
-        await loadMoreJobs(20, total)
-        panel.setStats(lastJobs.length, matchedJobs.length)
-        panel.setStatus(`已自动加载：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
-      }
+      // 通过数未达目标时自动多抓几页填满到目标数
+      // （以前只在"开了筛选"时才补，导致不筛选时点刷新只看到当前一屏）
+      await autoFillToTarget('刷新')
       await syncDetailToFirst()
     },
-    onRun: runBatch,
+    onRun: async () => {
+      if (markStaleIfNeeded()) return
+      await runBatch()
+    },
     onStop: () => {
       stopRequested = true
       paused = false
     },
     onPause: () => {
+      // 没在投递时点「暂停」是无效操作：如果放行，paused 会残留为 true，
+      // 下一次点「开始投递」时 runBatch 一进来就卡在 waitIfPaused()，
+      // 表现为"点了开始投递毫无反应"（排查过一次真实案例）。
+      if (!running) {
+        panel.log('当前没有在投递，无需暂停', 'info')
+        return
+      }
       paused = !paused
       panel.setPaused(paused)
       panel.log(paused ? '已暂停，点「继续」恢复' : '已继续', 'info')
@@ -883,9 +1642,12 @@ function init() {
       // 临时显示全部卡片（跳过过滤），便于看清列表实际内容；不修改已保存的筛选配置
       // 用开关状态让后续任何列表刷新都不会再把卡片藏回去；重新「应用筛选」时复位
       showAllOverride = true
+      // 关键：按"我们隐藏过的节点"还原。以前只清卡片自身的 display，
+      // 隐藏落在祖先 .job-card-wrap 上时还原不掉，列表高度被压没 → 点什么都会"到底"。
+      restoreAllCards()
       let shown = 0
       for (const j of lastJobs) {
-        const el = ((j.element as HTMLElement)?.closest('.job-card-wrap, .card-area') ?? (j.element as HTMLElement)) as HTMLElement | null
+        const el = cardBoxOf(j)
         if (!el) continue
         el.style.display = ''
         shown++
@@ -894,6 +1656,7 @@ function init() {
       panel.log('已临时显示全部职位；重新「应用筛选」可恢复过滤', 'info')
     },
     onLoadMore: async () => {
+      if (markStaleIfNeeded()) return
       // 一直滚到配置的目标数量为止；够数才停，不够就继续滚（到底则提示）
       const total = cfg.targetCount || 20
       panel.setStatus(`正在加载更多（目标 ${total} 个，当前 ${matchedJobs.length}）…`)
@@ -914,6 +1677,31 @@ function init() {
     },
     onDebug: () => {
       const lines: string[] = []
+
+      // ---- 顶部固定栏诊断（面板定位依赖它，真实页面上排查用）----
+      lines.push('===== 顶部固定栏诊断 =====')
+      const vwDbg = document.documentElement.clientWidth
+      const vhDbg = window.innerHeight
+      lines.push(`视口: ${vwDbg} x ${vhDbg}, dpr=${window.devicePixelRatio}`)
+      lines.push(`body padding-right=${document.body.style.paddingRight || '(空)'}`)
+      const fixedRows: string[] = []
+      for (const el of Array.from(document.body.querySelectorAll<HTMLElement>('*'))) {
+        const cs = getComputedStyle(el)
+        if (cs.position !== 'fixed' && cs.position !== 'sticky') continue
+        const r = el.getBoundingClientRect()
+        if (r.width < 60 || r.height < 8) continue
+        const cls = typeof el.className === 'string' ? el.className.slice(0, 46) : ''
+        fixedRows.push(
+          `${cs.position} <${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${cls ? '.' + cls.replace(/\s+/g, '.') : ''}> ` +
+            `top=${Math.round(r.top)} bottom=${Math.round(r.bottom)} w=${Math.round(r.width)} h=${Math.round(r.height)} z=${cs.zIndex}`,
+        )
+      }
+      lines.push(`固定/吸顶元素 ${fixedRows.length} 个:`)
+      lines.push(fixedRows.join('\n') || '(无)')
+      // 面板自身定位结果——排查"位置偏低/偏高"时最关键的一行
+      lines.push(`面板 top=${panel?.domTop() ?? '(未设置)'}  compact=${panel?.isCompact() ?? '?'}`)
+      lines.push('')
+
       const vueJobs = readVueJobList()
       lines.push(`===== Vue jobList 条数: ${vueJobs.length} =====`)
       if (vueJobs[0]) {
@@ -1009,6 +1797,9 @@ function init() {
       await saveConfig(cfg)
       const name = lastJobs.find((j) => j.key === key)?.jobName || key
       panel.log(set.has(key) ? `已排除：${name}` : `已恢复：${name}`, 'info')
+      // 排除会改变"可投数"，必须重算统计（只重画预览行不够，
+      // 面板顶部的「可投 N 个」和主按钮文案都依赖 setStats 的结果）。
+      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       if (panel.refreshPreview) panel.refreshPreview()
     },
     onRetry: async (key) => {
@@ -1033,6 +1824,7 @@ function init() {
       if (panel.refreshPreview) panel.refreshPreview()
     },
     onSave: async (c) => {
+      if (markStaleIfNeeded()) return
       cfg = c
       await saveConfig(c)
       // 重新应用筛选：结束「显示全部」的临时状态，恢复按条件隐藏
@@ -1049,7 +1841,19 @@ function init() {
       applyVisualFilter()
       panel.log(`保留 ${matchedJobs.length}，筛掉 ${dropped.length}：`, 'info')
       for (const d of dropped.slice(0, 40)) panel.log(`  ✕ ${d.jobName}(${d.salaryDesc || '?'}) — ${passFilter(d, cfg).reason}`, 'warn')
-      panel.setStats(lastJobs.length, matchedJobs.length)
+      // 提示：如果开了薪资档位、但页面上一个薪资数字都读不到，说明筛选实际没生效
+      const salaryFilterOn =
+        cfg.filters.daySalary.enable || cfg.filters.hourlySalary.enable || cfg.filters.monthlySalary.enable
+      if (salaryFilterOn) {
+        const withDigits = lastJobs.filter((j) => hasSalaryDigits(j.salaryDesc || '')).length
+        if (withDigits === 0 && lastJobs.length > 0) {
+          panel.log(
+            '⚠ 薪资档位已开启，但一个薪资数字都读不到 → 本次薪资筛选未生效（可能未登录，或页面结构变了）',
+            'warn',
+          )
+        }
+      }
+      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       panel.setStatus(`已筛选：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
       // 一条都不剩，列出已启用筛选
       if (lastJobs.length > 0 && matchedJobs.length === 0) {
@@ -1057,25 +1861,49 @@ function init() {
         for (const s of activeFilterSummary(cfg)) panel.log(`  · ${s}`, 'warn')
         panel.log('（可点面板「显示全部」恢复列表，或放宽「设置」里的条件）', 'info')
       }
-      // 筛选开启且通过数未达目标，自动多抓几页填满到目标数
-      const total = cfg.targetCount || 20
-      if (hasActiveFilter(cfg) && matchedJobs.length < total && matchingAutoFillAllowed()) {
-        panel.setStatus(`找到 ${matchedJobs.length} 个符合条件，尝试加载到 ${total} 个…`)
-        await loadMoreJobs(20, total)
-        panel.setStats(lastJobs.length, matchedJobs.length)
-        panel.setStatus(`已自动加载：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
-      }
+      // 通过数未达目标，自动多抓几页填满到目标数
+      await autoFillToTarget('应用筛选')
       // 把右侧详情同步到第一个通过的职位，避免左右对不上
       await syncDetailToFirst()
     },
   })
   panel.log('BossHunter 已注入', 'ok')
   watchList()
+  // 点扩展图标 → 唤起这个页面里的面板（取代原来的 popup 配置页）
+  chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
+    if (msg?.type === 'bh-open-panel') {
+      try {
+        panel.showPanel(msg.tab)
+        sendResponse({ ok: true })
+      } catch (e) {
+        sendResponse({ ok: false, error: (e as Error).message })
+      }
+      return true
+    }
+    return false
+  })
+  // 扩展若被重载，storage 监听会先失效；轮询兜底把面板切到失效态
+  setInterval(() => {
+    if (!extensionAlive()) markStaleIfNeeded()
+  }, 3000)
 }
 
 onConfigChanged((c) => {
   cfg = c
   panel?.log('配置已更新', 'info')
+  // 别的标签页/弹窗改了配置时，当前页面也要立刻按新条件重筛一遍；
+  // 以前只更新了 cfg 变量，页面上的卡片仍然按旧条件显示，用户会以为"改了没反应"。
+  try {
+    if (panel && lastJobs.length) {
+      showAllOverride = false
+      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      applyVisualFilter()
+      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
+      panel.setStatus(`配置已更新：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+    }
+  } catch (e) {
+    console.error('[BossHunter] 配置更新后重新筛选失败', e)
+  }
 })
 
 async function main() {
@@ -1091,6 +1919,72 @@ async function main() {
   }
   // 请求网络hook重放已捕获的接口数据（日薪金额/Boss活跃来源）
   window.postMessage({ type: 'bh-replay' }, '*')
+  // 如果上次投递被站点强制跳转打断过，这里自动续投
+  void resumeIfInterrupted()
+}
+
+/**
+ * 续投：页面被 BOSS 强制跳转（整页重载）导致投递中断时，
+ * content script 重新注入后由这里接着跑。
+ *
+ * 只在「当前是职位列表页 + 有未完成且未过期的进度」时触发，
+ * 完成后清掉进度；超过 2 小时的旧进度直接丢弃（避免第二天开页面莫名开始投递）。
+ */
+async function resumeIfInterrupted() {
+  try {
+    const p = await loadProgress()
+    if (!p) return
+    if (isProgressStale(p)) {
+      await saveProgress(null)
+      return
+    }
+    const remaining = p.queue.filter((k) => !p.done.includes(k))
+    if (!remaining.length) {
+      await saveProgress(null)
+      return
+    }
+    // 页面可能被 BOSS 强制带到了聊天页。这里主动判断：不是列表页就先跳回列表页，
+    // 否则续投永远等不到卡片渲染，用户看到的就是"投到一半彻底停了"。
+    const onListPage = () => !!document.querySelector(CARD_SELECTORS)
+    if (!onListPage()) {
+      // 防死循环：最多尝试 3 次"跳回列表"，还不行就放弃并提示用户
+      const attempts = (p.resumeAttempts || 0) + 1
+      if (attempts > 3) {
+        panel?.log('多次尝试返回列表页失败，已停止续投，请手动回到职位列表后点「开始投递」', 'warn')
+        await saveProgress(null)
+        return
+      }
+      p.resumeAttempts = attempts
+      await saveProgress(p)
+      panel?.log(`上次投递被打断且当前不在列表页，正在返回职位列表以继续（第 ${attempts} 次）…`, 'warn')
+      location.replace('/web/geek/jobs')
+      return
+    }
+    // 等页面把职位的卡片渲染出来再续投（最多等 20 秒）
+    for (let i = 0; i < 40; i++) {
+      if (readCards().length > 0 && matchedJobs.length > 0) break
+      await sleep(500)
+    }
+    if (!readCards().length) {
+      return
+    }
+    panel.log(
+      `检测到上次投递被中断，还有 ${remaining.length} 个未完成，自动续投…`,
+      'warn',
+    )
+    // 把剩下的职位恢复成当前候选，直接跑 runBatch
+    lastJobs = collectJobs()
+    const remainSet = new Set(remaining)
+    matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass && remainSet.has(j.key) && j.element)
+    if (!matchedJobs.length) {
+      panel.log('中断的职位在当前页面已找不到卡片，放弃续投（可点「查看更多」加载后再试）', 'warn')
+      await saveProgress(null)
+      return
+    }
+    await runBatch()
+  } catch (e) {
+    console.error('[BossHunter] 续投失败', e)
+  }
 }
 
 void main()

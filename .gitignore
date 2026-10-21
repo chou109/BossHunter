@@ -3,6 +3,7 @@ node_modules/
 
 # 构建产物
 dist/
+dev-harness/dist/
 *.local
 
 # 日志
@@ -17,6 +18,7 @@ pnpm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+.freebuff/
 
 # 压缩包
 *.zip
