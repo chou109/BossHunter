@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>滚动穿透测试</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #eef1f5; }
+  /* 让页面本身足够长，才能观察到 window 被滚动 */
+  #tall { height: 4000px; padding: 20px; }
+  .fcard { background: #fff; border: 1px solid #e8ecf1; border-radius: 8px; padding: 12px; margin-bottom: 10px; width: 420px; }
+  .fcard h4 { margin: 0 0 6px; font-size: 13px; }
+  .fcard .s { color: #f05a28; font-weight: 700; float: right; }
+</style>
+</head>
+<body>
+<div id="tall">
+  <div id="cards"></div>
+</div>
+<script type="module" src="./scroll.ts"></script>
+</body>
+</html>

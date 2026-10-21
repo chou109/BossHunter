@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>顶部栏定位压力测试</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Microsoft YaHei", sans-serif; background: #f6f7f9; }
+
+  /* ① 顶部主导航（fixed，通栏） */
+  .zp-nav { position: fixed; left: 0; right: 0; top: 0; height: 56px; background: #0b1a2b; z-index: 100; display: flex; align-items: center; }
+  .zp-nav .inner { width: 100%; display: flex; align-items: center; gap: 16px; padding: 0 20px; color: #fff; }
+  .zp-nav .logo { font-weight: 700; color: #2fd6c3; }
+  .zp-nav .spacer { flex: 1; }
+  .zp-nav .avatar { width: 28px; height: 28px; border-radius: 50%; background: #2fd6c3; }
+
+  /* ② 搜索条（fixed，通栏，紧接导航下方） */
+  .zp-search { position: fixed; left: 0; right: 0; top: 56px; height: 52px; background: #0e2237; z-index: 99; display: flex; align-items: center; padding: 0 20px; }
+  .zp-search .bar { flex: 1; max-width: 460px; height: 32px; border-radius: 16px; background: #fff; }
+
+  /* ③ 筛选栏（fixed，通栏，紧接搜索下方） —— 真实 BOSS 就有这一层 */
+  .zp-filter { position: fixed; left: 0; right: 0; top: 108px; height: 46px; background: #fff; z-index: 98; display: flex; align-items: center; gap: 10px; padding: 0 20px; border-bottom: 1px solid #e8ecf1; }
+  .zp-filter .chip { border: 1px solid #e2e6ec; border-radius: 4px; padding: 3px 8px; font-size: 12px; color: #46536a; }
+
+  /* ④ 底部客服悬浮条（fixed，通栏！）—— 这是最容易被误判成顶栏的元素 */
+  .zp-bottom-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 60px; background: #12324a; z-index: 97; display: flex; align-items: center; padding: 0 20px; color: #cfd8e3; }
+
+  /* ⑤ 右侧悬浮客服按钮（fixed，窄，不该参与判定） */
+  .zp-fab { position: fixed; right: 18px; bottom: 120px; width: 44px; height: 44px; border-radius: 50%; background: #3eaf7c; z-index: 96; }
+
+  /* ⑥ 滚动后才出现的吸顶小条（sticky） */
+  .zp-sticky-note { position: sticky; top: 0; height: 34px; background: #fffbe6; border-bottom: 1px solid #f2d3a2; display: flex; align-items: center; padding: 0 20px; font-size: 12px; color: #8a5a12; z-index: 95; }
+
+  .zp-main { padding-top: 170px; display: flex; gap: 16px; max-width: 1250px; margin: 0 auto; padding-bottom: 90px; }
+  .zp-list { width: 400px; }
+  .fcard { background: #fff; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .zp-detail { flex: 1; background: #fff; border-radius: 8px; padding: 16px; }
+  .tall { height: 1600px; }
+</style>
+</head>
+<body>
+<header class="zp-nav"><div class="inner">
+  <span class="logo">BOSS直聘</span><span>首页</span><span>职位</span><span>公司</span>
+  <span class="spacer"></span><span class="avatar" id="avatar"></span>
+</div></header>
+<div class="zp-search"><div class="bar"></div></div>
+<div class="zp-filter">
+  <span class="chip">武汉</span><span class="chip">求职类型</span><span class="chip">薪资待遇</span>
+  <span class="chip">工作经验</span><span class="chip">学历要求</span>
+</div>
+<div class="zp-bottom-bar">底部客服条（通栏 fixed，不该被当成顶栏）</div>
+<div class="zp-fab"></div>
+
+<main class="zp-main">
+  <div class="zp-list">
+    <div class="zp-sticky-note">这是一个 sticky 提示条</div>
+    <div id="list"></div>
+    <div class="tall"></div>
+  </div>
+  <div class="zp-detail">职位详情</div>
+</main>
+<script type="module" src="./topbars.ts"></script>
+</body>
+</html>
