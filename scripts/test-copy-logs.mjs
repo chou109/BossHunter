@@ -60,7 +60,7 @@ try{
   check('点击后写入了剪贴板', typeof clip === 'string' && clip.length > 0, clip ? `${clip.length} 字符` : '空')
   const firstLine = (clip || '').split('\n')[0] || ''
   check('内容含时间+消息', /\d{1,2}:\d{2}:\d{2}\s+/.test(firstLine), JSON.stringify(firstLine))
-  check('包含"接口数据"等日志文本', (clip || '').includes('接口数据') || (clip || '').includes('保留'))
+  check('包含日志正文文本', (clip || '').includes('符合') || (clip || '').includes('职位') || (clip || '').includes('注入'))
   const btnText = await ev(`document.querySelector('#bh-log-copy').textContent`)
   check('按钮提示"已复制"', /已复制/.test(btnText || ''), btnText)
 

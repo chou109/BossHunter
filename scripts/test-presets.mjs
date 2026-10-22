@@ -82,7 +82,7 @@ await ev(`window.__BH_HARNESS__.apply('ready')`)
 await ev(`window.__BH_HARNESS__.openSettings()`)
 await new Promise((r) => setTimeout(r, 600))
 
-const hasSection = await ev(`!!document.querySelector('#bh-settings details[data-sec="presets"]')`)
+const hasSection = await ev(`!!document.querySelector('#bh-settings .bh-sec[data-sec="presets"]')`)
 check('存在「预设方案」分组', hasSection === true)
 
 const presetCount = Number(await ev(`document.querySelectorAll('#bh-settings .bh-preset').length`))
@@ -172,7 +172,7 @@ const shot = await cdp.send('Page.captureScreenshot', {
   format: 'png',
   clip: { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 },
 })
-fs.writeFileSync(path.join(ROOT, 'docs', 'shots', '12-presets.png'), Buffer.from(shot.data, 'base64'))
+fs.writeFileSync(path.join(ROOT, 'docs', 'shots', '16-presets.png'), Buffer.from(shot.data, 'base64'))
 
 cdp.ws.close(); chrome.kill(); server.close()
 console.log(`\n${fails === 0 ? '✅ 全部通过' : `❌ ${fails} 项未通过`}`)

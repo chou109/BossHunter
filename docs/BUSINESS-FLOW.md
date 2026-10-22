@@ -1,8 +1,11 @@
 # BossHunter 业务流程梳理（依据源码实测）
 
-> 依据：`src/content/index.ts`(1099 行)、`src/content/panel.ts`(783 行)、`src/content/networkHook.ts`、
-> `src/lib/{config,filter,range,activity,types}.ts`，并在真实 Edge 中加载 `dist/` 实测。
+> 依据：`src/content/index.ts`、`src/content/panel.ts`、`src/content/networkHook.ts`、
+> `src/lib/{config,filter,range,activity,types,safety}.ts`，并在真实 Edge 中加载 `dist/` 实测。
 > （`src/popup/` 已移除，设置只剩页面内面板一套。）
+>
+> **注：文中「查看更多 / 显示全部 / 应用筛选」为历史叫法，界面上现已改为「多找一些 / 看全部 / 保存并筛选」，
+> 理解时按右侧新名对应即可（本文件保留旧名仅为不打断历史叙述）。**
 
 ## 0. 三条运行通道
 

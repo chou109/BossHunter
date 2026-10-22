@@ -31,10 +31,12 @@ function job(i: number): JobItem {
 const JOBS = Array.from({ length: 12 }, (_, i) => job(i))
 
 const panel = new Panel({
-  onRefresh: async () => {}, onRun: async () => {}, onStop: () => {}, onPause: () => {},
+  onRefresh: async () => {}, onRun: async () => {}, onConfirmSend: async () => {}, onStop: () => {}, onPause: () => {},
   onDebug: () => {}, onShowAll: () => {}, onLoadMore: async () => {},
   getConfig: () => cfg, getMatched: () => JOBS, getRetry: () => [], getExcluded: () => new Set(),
   toggleExclude: () => {}, onRetry: () => {}, onLocateJob: () => {}, onSave: async () => {},
+  onSaveAdvancedDefaults: () => {},
+  getAdvancedDefaults: () => ({ roundSize: 5, loadPages: 3, roundInterval: 60000, itemInterval: 5000, deliveryLimit: 120, targetCount: 20 }),
 })
 
 panel.setStats(JOBS.length, JOBS.length, true)

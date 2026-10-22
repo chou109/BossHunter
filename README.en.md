@@ -28,10 +28,10 @@
 BOSS renders salary digits with a custom font, so raw DOM text is garbled (**no parseable numbers**). BossHunter injects a **network hook** (`networkHook.ts`) in the page's MAIN world to capture the **real salaries** (`lowSalary`/`highSalary`) and **Boss active time** from API responses, then pairs them to cards by `encryptJobId`. When a salary can't be parsed it is simply **not filtered out** (never wrongly removed).
 
 ### 4. Floating panel (three tabs)
-- **Preview**: live "filter-passed (N)" list with a per-item **Exclude** button
+- **Preview**: live "deliverable (N)" list; clicking a row scrolls the host list to that job and highlights it, with a per-item **Exclude** button
 - **Log**: real-time run log (info/ok/warn colored)
-- **Settings**: visual editing of all filters & scheduling; click "Apply filters" to re-filter the list instantly
-- Extras: **Show all** (temporary expand that survives list refresh), **Load more**, **Debug** (exports diagnostics for troubleshooting)
+- **Settings**: visual editing of all filters; delivery pace / limits / greeting live in a collapsed **Advanced** section. Changes take effect after **Save & filter**.
+- Extras: **View all** (temporary expand that survives list refresh), **Load more**, **Rescan**, **Debug** (exports diagnostics for troubleshooting)
 
 ---
 
@@ -86,11 +86,13 @@ If jobs aren't read, data looks mismatched, or salary filtering seems off, click
 
 ## 📖 Quick start
 1. Open a job-list page (e.g. `https://www.zhipin.com/web/geek/jobs`), expand the `BH` panel
-2. **Settings** → configure filters (salary, activity, keywords, excludes) and scheduling (round size, intervals, daily limit)
-3. Hit **Apply filters** — non-matching cards are hidden immediately; the preview shows the pass count (use "Load more" to top it up)
+2. **Settings** → configure filters (salary, activity, keywords, excludes). Delivery pace / limits / greeting are under **Advanced** with safe defaults.
+3. Hit **Save & filter** — non-matching cards are hidden; the preview shows the deliverable count (use "Load more" to top it up)
 4. Exclude any unwanted job from the **Preview** tab
-5. Hit **Batch apply**; pause/resume/stop as needed
+5. Hit **Deliver these N** → in the **confirm sheet**, review who/what/how long, then **Confirm send** to actually start; pause/resume/stop as needed
 6. Review the **Log**; retry unconfirmed jobs in the **Preview** tab
+
+> **Platform safety**: to avoid BOSS anti-bot detection, intervals have hard safety floors (per-item ≥ 3s, per-round ≥ 30s) enforced by the UI. Save a preferred pace via **Save as default** in Advanced and restore it anytime with **Restore default**.
 
 ---
 
@@ -124,8 +126,8 @@ If jobs aren't read, data looks mismatched, or salary filtering seems off, click
 ---
 
 ## 📝 FAQ
-- **Jobs disappeared after loading**: hidden by the filter — click "Show all" to expand temporarily; "Apply filters" to restore.
-- **Salary filter not working**: the list DOM carries garbled salary (unparseable → passed through). Hit "Apply filters" or "Load more" to trigger API capture.
+- **Jobs disappeared after loading**: hidden by the filter — click "View all" to expand temporarily; "Save & filter" to restore.
+- **Salary filter not working**: the list DOM carries garbled salary (unparseable → passed through). Hit "Save & filter" or "Load more" to trigger API capture.
 - **Batch apply is slow**: expected; delays are intentionally randomized to lower anti-bot risk — tune them in Settings.
 - **Chat opens on another page**: if BOSS hosts chat in a cross-origin iframe/new tab, the extension cannot reach cross-origin DOM.
 

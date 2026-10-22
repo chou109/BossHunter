@@ -143,23 +143,22 @@ export const PANEL_CSS = `
 
 /* ---------- 顶部工作区（固定不滚动） ---------- */
 /**
- * 进设置页时收起工作台，把高度让给表单。
- * 不能用 display:none —— 那样是瞬间消失。这里用 grid-template-rows 0fr->1fr
- * 让 auto 高度参与过渡，同时淡出 + 上移，和面板高度补间一起形成连续动效。
+ * 进设置页时收起工作台，把高度让给表单——要的是"收起的动画"，不是一帧消失。
+ * 做法：工作台自己用 grid-template-rows 1fr→0fr 做高度过渡 + 内容淡出；
+ * 面板 root 是 auto 高度，会自然跟着工作台一起平滑收缩。
+ * 【关键】不要再给 root 额外加一次高度补间 —— 两个高度动画叠加就是之前"抽风"的来源。
  */
 #bh-panel .bh-work {
-  display: grid; grid-template-rows: 1fr;
-  /* 关键：作为 .bh-body 的 flex 子项，必须禁止收缩。
-     否则下面列表一长，工作台会被压扁，工具栏/状态行直接被裁掉。 */
+  display: grid; grid-template-rows: minmax(0, 1fr);
+  /* 作为 .bh-body 的 flex 子项，必须禁止收缩，否则列表一长会被压扁 */
   flex: none;
   border-bottom: 1px solid var(--bh-line);
   background: var(--bh-surface);
+  overflow: hidden;
   transition:
     grid-template-rows var(--bh-motion) var(--bh-ease),
     border-bottom-color var(--bh-motion) var(--bh-ease),
     border-bottom-width var(--bh-motion) var(--bh-ease);
-  /* 收起后不留 1px 空条 */
-  overflow: hidden;
 }
 #bh-panel .bh-work > .bh-work-inner {
   min-height: 0; overflow: hidden;
@@ -173,9 +172,9 @@ export const PANEL_CSS = `
 /* grid 子项默认会被压缩，导致 42px 的投递按钮被挤成 20px。
    工作台内部一律按内容高度排布，不允许收缩。 */
 #bh-panel .bh-work-inner > * { flex: none; min-height: auto; }
-/* 收起到 0 行 + 淡出，border 也一起收掉，避免留一条空线 */
+/* 收起到 0 行 + 淡出；内层 padding 也归零，否则 grid 0fr 的自动最小尺寸会残留约 19px */
 #bh-panel.mode-settings .bh-work {
-  grid-template-rows: 0fr;
+  grid-template-rows: minmax(0, 0fr);
   border-bottom-color: transparent;
   border-bottom-width: 0;
 }
@@ -491,46 +490,98 @@ export const PANEL_CSS = `
   margin: 0; border-bottom: 1px solid var(--bh-line);
 }
 #bh-panel .bh-sec:last-child { border-bottom: 0; }
-#bh-panel .bh-sec > summary {
+/* 高级设置：把「节奏 / 上限 / 招呼语」这些机器参数收进一个默认折叠的容器。
+   视觉上比普通分组更「退后」一点（浅色头 + 虚线框），暗示"一般不用动"。 */
+#bh-panel .bh-sec.bh-sec-adv {
+  margin: var(--bh-s2) var(--bh-s3) !important;
+  border: 1px dashed var(--bh-line-2) !important;
+  border-radius: var(--bh-r-md);
+  overflow: hidden;
+}
+#bh-panel .bh-sec.bh-sec-adv > .bh-sec-sum {
+  position: static;
+  background: var(--bh-surface-2);
+  font-size: 12px;
+  color: var(--bh-ink-2);
+}
+#bh-panel .bh-sec.bh-sec-adv .bh-sec-body { padding-left: var(--bh-s3); padding-right: var(--bh-s3); }
+#bh-panel .bh-adv-lead {
+  margin: 0 0 12px; padding: 8px 10px;
+  border-radius: var(--bh-r-sm); background: var(--bh-surface-3);
+  font-size: 11px; line-height: 1.55; color: var(--bh-ink-3);
+}
+#bh-panel .bh-adv-sub {
+  margin: 16px 0 8px; padding-top: 12px;
+  border-top: 1px solid var(--bh-line);
+  font-size: 11.5px; font-weight: 650; color: var(--bh-ink-2);
+}
+#bh-panel .bh-adv-sub:first-of-type { margin-top: 4px; border-top: 0; padding-top: 0; }
+/* 高级设置顶部：默认值操作条 */
+#bh-panel .bh-adv-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 14px;
+}
+#bh-panel .bh-adv-btn {
+  padding: 5px 12px; border-radius: var(--bh-r-sm);
+  border: 1px solid #cdebdd; background: var(--bh-brand-soft); color: var(--bh-brand);
+  font-size: 11.5px; font-weight: 650; cursor: pointer;
+  transition: background .14s ease, border-color .14s ease;
+}
+#bh-panel .bh-adv-btn:hover { background: #dcf2e7; }
+#bh-panel .bh-adv-btn.ghost {
+  border-color: var(--bh-line-2); background: var(--bh-surface); color: var(--bh-ink-2);
+}
+#bh-panel .bh-adv-btn.ghost:hover { background: var(--bh-surface-2); }
+#bh-panel .bh-adv-note { font-size: 11px; color: var(--bh-ink-3); }
+#bh-panel .bh-adv-note.ok { color: var(--bh-brand); }
+/* 分组头：用 button 而非 <summary>。
+   原因：新版 Chrome 的 <details> 用 content-visibility 隐藏内容，会让内部 grid 折叠动画
+   完全失效（实测 gridTemplateRows 任何状态都卡在展开值，展开/收起其实是瞬间显隐）。 */
+#bh-panel .bh-sec > .bh-sec-sum {
   position: sticky; top: 0; z-index: 2;
   display: flex; align-items: center; gap: var(--bh-s2);
-  padding: 11px var(--bh-s3); cursor: pointer; list-style: none;
+  width: 100%; box-sizing: border-box;
+  padding: 11px var(--bh-s3); cursor: pointer;
+  border: 0; text-align: left;
   background: var(--bh-surface);
   font-size: 12.5px; font-weight: 650; color: var(--bh-ink);
   transition: background .12s ease;
 }
-#bh-panel .bh-sec > summary::-webkit-details-marker { display: none; }
-#bh-panel .bh-sec > summary:hover { background: var(--bh-surface-2); }
-#bh-panel .bh-sec[open] > summary { border-bottom: 1px solid var(--bh-line); }
-#bh-panel .bh-sec > summary svg.bh-chev {
+#bh-panel .bh-sec > .bh-sec-sum:hover { background: var(--bh-surface-2); }
+#bh-panel .bh-sec.open > .bh-sec-sum { border-bottom: 1px solid var(--bh-line); }
+#bh-panel .bh-sec > .bh-sec-sum svg.bh-chev {
   flex: none; width: 12px; height: 12px; color: var(--bh-ink-3);
   transition: transform .18s ease;
 }
-#bh-panel .bh-sec[open] > summary svg.bh-chev { transform: rotate(90deg); }
-#bh-panel .bh-sec > summary .bh-sec-hint {
+#bh-panel .bh-sec.open > .bh-sec-sum svg.bh-chev { transform: rotate(90deg); }
+#bh-panel .bh-sec > .bh-sec-sum .bh-sec-hint {
   margin-left: auto; padding: 1px 8px; border-radius: 999px;
   background: var(--bh-brand-soft); color: var(--bh-brand);
   font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums;
   white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis;
 }
-/* 分组展开/收起：grid-template-rows 0fr -> 1fr 可以让 auto 高度参与过渡 */
+/* 分组展开/收起：现在用普通 div（不再是 <details>），grid-template-rows 0fr->1fr 可以正常过渡 auto 高度。
+   这套方案的好处：不需要 JS 手动算像素高度，连续快速点击时 CSS 过渡会自动反向重定向，
+   不会出现"手算 from/to 打架"的抽风。前提是 body 只包裹一个子元素（.bh-sec-inner）。
+   竖直 padding 也参与过渡：闭合时为 0，避免收起后还残留 24px 高度。 */
 #bh-panel .bh-sec-body {
   display: grid; grid-template-rows: 0fr;
+  overflow: hidden;
   padding: 0 var(--bh-s3);
   opacity: 0;
-  /* 允许内容在容器内收缩，避免撑出横向滚动条 */
   min-width: 0; box-sizing: border-box;
   transition:
     grid-template-rows var(--bh-motion) var(--bh-ease),
     padding var(--bh-motion) var(--bh-ease),
     opacity calc(var(--bh-motion) * .7) var(--bh-ease);
 }
-#bh-panel .bh-sec[open] > .bh-sec-body {
+#bh-panel .bh-sec.open > .bh-sec-body {
   grid-template-rows: 1fr;
   padding: var(--bh-s3);
   opacity: 1;
 }
-#bh-panel .bh-sec-body > * { min-height: 0; min-width: 0; max-width: 100%; }
+#bh-panel .bh-sec-inner { min-height: 0; min-width: 0; overflow: hidden; }
+#bh-panel .bh-sec-inner > * { min-height: 0; min-width: 0; max-width: 100%; }
 
 /* 字段组：标签 / 控件 / 说明 恒定节奏 */
 #bh-panel .bh-fg { margin-bottom: 14px; }
@@ -584,9 +635,13 @@ export const PANEL_CSS = `
 #bh-panel .bh-seg button.active[data-v="0"] { color: var(--bh-danger); }
 #bh-panel .bh-seg button.active[data-v="1"] { color: var(--bh-brand); }
 
-/* 数字输入组合 */
+/* ---------- 数值滑块控件（替代纯输入框）----------
+   连续型数值（每轮数、间隔、上限……）用滑块 + 可编辑数值气泡：
+   拖动 / 滚轮 / 方向键都能快速调，数值本身仍可直接点开输入精调。 */
+#bh-panel .bh-slider { display: flex; flex-direction: column; gap: 6px; }
+#bh-panel .bh-slider-row { display: flex; align-items: center; gap: 10px; }
 #bh-panel .bh-num {
-  display: flex; align-items: center;
+  display: inline-flex; align-items: center; flex: none;
   border: 1px solid var(--bh-line-2); border-radius: var(--bh-r-sm);
   background: var(--bh-surface); overflow: hidden;
   transition: border-color .15s ease, box-shadow .15s ease;
@@ -595,9 +650,45 @@ export const PANEL_CSS = `
   border-color: var(--bh-brand); box-shadow: 0 0 0 3px rgba(14, 159, 110, .13);
 }
 #bh-panel .bh-num input {
-  flex: 1; min-width: 0; width: 100%; padding: 7px 9px;
+  width: 3.2em; min-width: 0; padding: 5px 2px 5px 8px;
   border: 0; outline: none; background: transparent;
-  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right;
+}
+#bh-panel .bh-num .bh-unit {
+  flex: none; padding: 0 8px 0 3px; font-size: 11px; color: var(--bh-ink-3);
+}
+/* 原生 range：统一成品牌绿，轨道细、拇指够大便于拖动 */
+#bh-panel .bh-range {
+  flex: 1; min-width: 0; -webkit-appearance: none; appearance: none;
+  height: 22px; background: transparent; cursor: pointer; margin: 0;
+}
+#bh-panel .bh-range::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--bh-brand) 0%, var(--bh-brand) var(--bh-fill, 0%),
+    var(--bh-surface-3) var(--bh-fill, 0%), var(--bh-surface-3) 100%
+  );
+}
+#bh-panel .bh-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 15px; height: 15px; margin-top: -5.5px;
+  border-radius: 999px; background: #fff;
+  border: 2px solid var(--bh-brand);
+  box-shadow: 0 1px 3px rgba(13, 21, 32, .22);
+  transition: transform .12s ease;
+}
+#bh-panel .bh-range:hover::-webkit-slider-thumb { transform: scale(1.12); }
+#bh-panel .bh-range:active::-webkit-slider-thumb { transform: scale(1.05); }
+#bh-panel .bh-range:focus-visible { outline: none; }
+#bh-panel .bh-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(14, 159, 110, .2);
+}
+/* 量程两端提示 */
+#bh-panel .bh-slider-scale {
+  display: flex; justify-content: space-between;
+  padding-left: 2px; font-size: 10px; color: var(--bh-ink-3);
+  font-variant-numeric: tabular-nums;
 }
 /* 去掉数字框的原生上下箭头（会压住右侧单位文字） */
 #bh-panel input[type="number"] {
@@ -607,9 +698,6 @@ export const PANEL_CSS = `
 #bh-panel input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none; appearance: none;
   display: none; margin: 0; width: 0; height: 0;
-}
-#bh-panel .bh-num .bh-unit {
-  flex: none; padding-right: 9px; font-size: 11px; color: var(--bh-ink-3);
 }
 
 /* 分组内的一句话说明，替代每个字段重复同一句 */
@@ -649,7 +737,6 @@ export const PANEL_CSS = `
   padding-right: 28px;
 }
 
-#bh-panel .bh-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--bh-s2); }
 #bh-panel .bh-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--bh-s2); }
 
 #bh-panel .bh-check {
@@ -672,10 +759,21 @@ export const PANEL_CSS = `
 }
 
 #bh-panel .bh-settings-foot {
-  flex: none; display: flex; gap: var(--bh-s2);
+  flex: none; display: flex; flex-direction: column; gap: 8px;
   padding: var(--bh-s3);
   border-top: 1px solid var(--bh-line); background: var(--bh-surface);
 }
+/* 有未保存改动时的提示：让"填了没生效"这件事可见，而不是靠用户猜 */
+#bh-panel .bh-dirty {
+  display: none; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--bh-warn);
+}
+#bh-panel .bh-dirty.show { display: flex; }
+#bh-panel .bh-dirty::before {
+  content: ''; width: 5px; height: 5px; border-radius: 999px;
+  background: var(--bh-warn); flex: none;
+}
+#bh-panel .bh-foot-row { display: flex; gap: var(--bh-s2); }
 #bh-panel .bh-save {
   flex: 2; height: 38px; border: 0; border-radius: var(--bh-r-md);
   background: var(--bh-brand); color: #fff;
@@ -690,6 +788,62 @@ export const PANEL_CSS = `
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
 #bh-panel .bh-cancel:hover { background: var(--bh-surface-2); }
+/* 一旦有未保存改动，"返回"变成"放弃修改"，让代价明确 */
+#bh-panel .bh-cancel.is-dirty { color: var(--bh-danger); border-color: #f0c8c8; }
+#bh-panel .bh-cancel.is-dirty:hover { background: var(--bh-danger-soft); }
+
+/* ---------- 投递确认层 ---------- */
+/* 唯一不可逆的动作（给真人 BOSS 发消息）必须过一道闸；覆盖在面板内，不打断页面 */
+#bh-panel .bh-confirm {
+  position: absolute; inset: 0; z-index: 10;
+  display: none; align-items: flex-end; justify-content: center;
+  padding: var(--bh-s3);
+  background: rgba(13, 21, 32, .38);
+}
+#bh-panel .bh-confirm.show { display: flex; animation: bh-confirm-fade var(--bh-motion) var(--bh-ease) both; }
+/* 关闭时先播退场动画再真正隐藏（panel.ts 在动画结束的 transitionend 后移除 .show） */
+#bh-panel .bh-confirm.closing { display: flex; animation: bh-confirm-fade-out calc(var(--bh-motion) * .8) var(--bh-ease) both; }
+@keyframes bh-confirm-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes bh-confirm-fade-out { from { opacity: 1; } to { opacity: 0; } }
+#bh-panel .bh-confirm-card {
+  width: 100%; display: flex; flex-direction: column; gap: 10px;
+  padding: var(--bh-s4);
+  background: var(--bh-surface);
+  border-radius: var(--bh-r-lg);
+  box-shadow: 0 14px 34px -8px rgba(13, 21, 32, .42);
+  animation: bh-confirm-rise var(--bh-motion) var(--bh-ease) both;
+}
+#bh-panel .bh-confirm.closing .bh-confirm-card { animation: bh-confirm-sink calc(var(--bh-motion) * .8) var(--bh-ease) both; }
+@keyframes bh-confirm-rise { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes bh-confirm-sink { from { transform: none; opacity: 1; } to { transform: translateY(14px); opacity: 0; } }
+#bh-panel .bh-confirm-title { font-size: 14px; font-weight: 700; color: var(--bh-ink); }
+#bh-panel .bh-confirm-line { font-size: 12px; line-height: 1.55; color: var(--bh-ink-2); }
+#bh-panel .bh-confirm-line b { color: var(--bh-ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+#bh-panel .bh-confirm-quote {
+  max-height: 96px; overflow-y: auto;
+  padding: 8px 10px; border-radius: var(--bh-r-sm);
+  background: var(--bh-surface-2); color: var(--bh-ink-2);
+  font-size: 11.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+}
+#bh-panel .bh-confirm-warn {
+  padding: 8px 10px; border-radius: var(--bh-r-sm);
+  border: 1px solid #f2c9c9; background: var(--bh-danger-soft);
+  color: var(--bh-danger); font-size: 11.5px; line-height: 1.5;
+}
+#bh-panel .bh-confirm-actions { display: flex; gap: var(--bh-s2); margin-top: 2px; }
+#bh-panel .bh-confirm-actions button {
+  flex: 1; height: 38px; border-radius: var(--bh-r-md);
+  font-size: 13px; font-weight: 650; cursor: pointer;
+  transition: background .15s ease, filter .15s ease;
+}
+#bh-panel .bh-confirm-back {
+  border: 1px solid var(--bh-line-2); background: var(--bh-surface); color: var(--bh-ink-2);
+}
+#bh-panel .bh-confirm-back:hover { background: var(--bh-surface-2); }
+#bh-panel .bh-confirm-go { border: 0; background: var(--bh-brand); color: #fff; }
+#bh-panel .bh-confirm-go:hover { filter: brightness(.96); }
+#bh-panel .bh-confirm-go.is-danger { background: var(--bh-danger); }
 
 /* ---------- 筛选预设 ---------- */
 #bh-panel .bh-presets {
@@ -788,6 +942,11 @@ export const PANEL_CSS = `
     top var(--bh-motion) var(--bh-ease);
 }
 #bh-panel.is-resizing-height { overflow: hidden; }
+/* 量高度时临时关闭所有过渡，确保拿到的是"落定后"的真实高度，而不是过渡中间值 */
+#bh-panel.bh-measuring,
+#bh-panel.bh-measuring *,
+#bh-panel.bh-measuring *::before,
+#bh-panel.bh-measuring *::after { transition: none !important; }
 
 #bh-panel.collapsed { max-height: 46px; }
 #bh-panel.collapsed .bh-body {

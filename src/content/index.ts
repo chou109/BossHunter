@@ -6,6 +6,7 @@ import type { AppConfig, BossActive, JobItem, TimeInterval } from '../lib/types'
 import { readGreeting, renderGreeting, signedHeaders, writeCustomGreetingVerified } from '../lib/greeting'
 import { decodeSalaryText, hasSalaryDigits } from '../lib/range'
 import { isProgressStale, loadProgress, saveProgress } from '../lib/progress'
+import { RECOMMENDED_ADVANCED } from '../lib/safety'
 import type { GreetingState } from '../lib/greeting'
 import { Panel } from './panel'
 import { locateJobInList } from './locate'
@@ -336,7 +337,7 @@ function rebuildJobsFromApi() {
   matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
   applyVisualFilter()
   panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
-  panel?.setStatus(`接口数据：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+  panel?.setStatus(`页面上共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
 }
 
 /** 卡片 href 里的职位 id（用于与接口数据精确配对） */
@@ -604,7 +605,7 @@ function watchList() {
     lastJobs = collectJobs()
     matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
     applyVisualFilter()
-    panel.setStatus(`${usingApi ? '接口' : '卡片'}数据：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+    panel.setStatus(`页面上共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
     panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
     // 开了筛选时结果会被压少，滚出新卡片就顺手补回目标值。
     // 没开筛选时所有卡片都通过，不需要替用户自动滚动页面。
@@ -660,7 +661,7 @@ async function autoFillToTarget(why: string): Promise<boolean> {
     matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
     applyVisualFilter()
     panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
-    panel.setStatus(`已自动加载：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+    panel.setStatus(`已自动加载：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
   }
   panel.log(`自动补足（${why}）：${before} → ${matchedJobs.length} 个（目标 ${total}）`, 'info')
   // 记下"这次补足失败时页面上有多少卡片"，watchList 用来看是否需要再滚一次
@@ -1357,7 +1358,7 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
       matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
       applyVisualFilter()
       panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
-      panel?.setStatus(`加载中：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+      panel?.setStatus(`加载中：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
       const afterDom = document.querySelectorAll(CARD_SELECTORS).length
       if (afterDom <= beforeDom) {
         panel.log(`没有更多可加载的职位了（卡片 ${beforeDom} → ${afterDom}，未新增）`, 'info')
@@ -1369,7 +1370,7 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
         break
       }
       lastMatched = matchedJobs.length
-      panel.log(`已加载更多：卡片 ${beforeDom} → ${afterDom}，保留 ${matchedJobs.length} 个`, 'info')
+      panel.log(`已加载更多：职位 ${beforeDom} → ${afterDom}，符合 ${matchedJobs.length} 个`, 'info')
     }
   } finally {
     // 循环里每轮都会 showAllCards()，退出时必须按当前筛选重新隐藏，
@@ -1715,7 +1716,8 @@ function init() {
       await autoFillToTarget('刷新')
       await syncDetailToFirst()
     },
-    onRun: async () => {
+    onConfirmSend: async () => {
+      // 面板的「投递这 N 个」只是打开确认层；用户点「确认发送」才真正走到这里
       if (markStaleIfNeeded()) return
       await runBatch()
     },
@@ -1750,7 +1752,7 @@ function init() {
         shown++
       }
       panel.setStatus(`已显示全部 ${shown} 个职位（未应用筛选）`)
-      panel.log('已临时显示全部职位；重新「应用筛选」可恢复过滤', 'info')
+      panel.log('已临时显示全部职位；重新「保存并筛选」可恢复过滤', 'info')
     },
     onLoadMore: async () => {
       if (markStaleIfNeeded()) return
@@ -1764,7 +1766,7 @@ function init() {
         await loadMoreJobs(20, total)
         const added = matchedJobs.length - before
         if (matchedJobs.length >= total) {
-          panel.setStatus(`已凑满 ${matchedJobs.length} 个（目标 ${total}），可点「批量投递」`)
+          panel.setStatus(`已凑满 ${matchedJobs.length} 个（目标 ${total}），可以开始投递了`)
           panel.log(`已加载到目标 ${total}，本次新增 ${added}，共 ${matchedJobs.length} 个`, 'info')
         } else {
           panel.setStatus(`已到底，共 ${matchedJobs.length} 个（未达目标 ${total}）`)
@@ -1904,7 +1906,7 @@ function init() {
     onRetry: async (key) => {
       const item = retryQueue.find((r) => r.job.key === key)
       if (!item) {
-        panel.log('未找到待重试的职位', 'warn')
+        panel.log('未找到需要重试的职位', 'warn')
         return
       }
       if (running) {
@@ -1935,6 +1937,8 @@ function init() {
     },
     onSave: async (c) => {
       if (markStaleIfNeeded()) return
+      // 保留用户已保存的「高级默认值」（配置表单不会改它）
+      c.advancedDefaults = cfg.advancedDefaults ?? null
       cfg = c
       await saveConfig(c)
       // 应用筛选改变了结果集：清掉"已到底"，让自动补足重新评估
@@ -1951,7 +1955,7 @@ function init() {
       }
       const dropped = lastJobs.filter((j) => !passFilter(j, cfg).pass)
       applyVisualFilter()
-      panel.log(`保留 ${matchedJobs.length}，筛掉 ${dropped.length}：`, 'info')
+      panel.log(`符合 ${matchedJobs.length}，筛掉 ${dropped.length} 个：`, 'info')
       for (const d of dropped.slice(0, 40)) panel.log(`  ✕ ${d.jobName}(${d.salaryDesc || '?'}) — ${passFilter(d, cfg).reason}`, 'warn')
       // 提示：如果开了薪资档位、但页面上一个薪资数字都读不到，说明筛选实际没生效
       const salaryFilterOn =
@@ -1966,17 +1970,35 @@ function init() {
         }
       }
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
-      panel.setStatus(`已筛选：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+      panel.setStatus(`已筛选：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
       // 一条都不剩，列出已启用筛选
       if (lastJobs.length > 0 && matchedJobs.length === 0) {
         panel.log('⚠️ 结果被筛空了。当前启用的筛选：', 'warn')
         for (const s of activeFilterSummary(cfg)) panel.log(`  · ${s}`, 'warn')
-        panel.log('（可点面板「显示全部」恢复列表，或放宽「设置」里的条件）', 'info')
+        panel.log('（可点面板「看全部」恢复列表，或放宽「设置」里的条件）', 'info')
       }
       // 通过数未达目标，自动多抓几页填满到目标数
       await autoFillToTarget('应用筛选')
       // 把右侧详情同步到第一个通过的职位，避免左右对不上
       await syncDetailToFirst()
+    },
+    onSaveAdvancedDefaults: (v) => {
+      cfg.advancedDefaults = v
+      void saveConfig(cfg)
+      panel.log('已保存高级设置默认值（下次点「恢复默认」即可还原）', 'ok')
+    },
+    getAdvancedDefaults: () => {
+      const d = cfg.advancedDefaults
+      if (d) return d
+      // 没保存过自定义默认 → 用内置推荐值
+      return {
+        roundSize: RECOMMENDED_ADVANCED.roundSize,
+        loadPages: RECOMMENDED_ADVANCED.loadPages,
+        roundInterval: RECOMMENDED_ADVANCED.roundIntervalSec * 1000,
+        itemInterval: RECOMMENDED_ADVANCED.itemIntervalSec * 1000,
+        deliveryLimit: RECOMMENDED_ADVANCED.deliveryLimit,
+        targetCount: RECOMMENDED_ADVANCED.targetCount,
+      }
     },
   })
   panel.log('BossHunter 已注入', 'ok')
@@ -2011,7 +2033,7 @@ onConfigChanged((c) => {
       matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
       applyVisualFilter()
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
-      panel.setStatus(`配置已更新：共 ${lastJobs.length} 个，保留 ${matchedJobs.length} 个`)
+      panel.setStatus(`配置已更新：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
     }
   } catch (e) {
     console.error('[BossHunter] 配置更新后重新筛选失败', e)
@@ -2089,7 +2111,7 @@ async function resumeIfInterrupted() {
     const remainSet = new Set(remaining)
     matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass && remainSet.has(j.key) && j.element)
     if (!matchedJobs.length) {
-      panel.log('中断的职位在当前页面已找不到卡片，放弃续投（可点「查看更多」加载后再试）', 'warn')
+      panel.log('中断的职位在当前页面已找不到卡片，放弃续投（可点「多找一些」加载后再试）', 'warn')
       await saveProgress(null)
       return
     }

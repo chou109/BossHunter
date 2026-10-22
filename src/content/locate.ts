@@ -40,7 +40,7 @@ export function locateJobInList(job: JobItem, deps: LocateDeps): boolean {
   const head = deps.boxOf(job) ?? el ?? null
 
   if (!el || !el.isConnected) {
-    deps.log('该职位还没渲染出卡片，先点「查看更多」或上下滚动列表，让它出现后再点', 'warn')
+    deps.log('该职位还没渲染出卡片，先点「多找一些」或上下滚动列表，让它出现后再点', 'warn')
     return false
   }
 

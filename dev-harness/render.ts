@@ -30,6 +30,10 @@ cfg.deliveryLimit = 120
 cfg.targetCount = 20
 
 function job(i: number, name: string, salary: string, company: string, city: string, active: string): JobItem {
+  // 面板判定"能投"要求 element.isConnected，所以把假卡片真的挂到文档上（隐藏）
+  const el = document.createElement('div')
+  el.style.display = 'none'
+  document.body.appendChild(el)
   return {
     key: `k${i}`,
     jobName: name,
@@ -49,7 +53,7 @@ function job(i: number, name: string, salary: string, company: string, city: str
     skills: ['C/C++'],
     address: city,
     link: 'https://www.zhipin.com/job_detail/x.html',
-    element: document.createElement('div'),
+    element: el,
   }
 }
 
@@ -67,7 +71,7 @@ let state: 'ready' | 'running' | 'empty' | 'stale' = 'ready'
 
 const panel = new Panel({
   onRefresh: async () => {},
-  onRun: async () => {},
+  onConfirmSend: async () => {},
   onStop: () => {},
   onPause: () => {},
   onDebug: () => {},
@@ -86,15 +90,25 @@ const panel = new Panel({
     ;(window as any).__BH_LAST_LOCATE__ = key
   },
   onSave: async () => {},
+  onSaveAdvancedDefaults: (v: any) => {
+    ;(window as any).__BH_ADV_DEFAULT__ = v
+  },
+  getAdvancedDefaults: () => {
+    return (
+      (window as any).__BH_ADV_DEFAULT__ ?? {
+        roundSize: 5, loadPages: 3, roundInterval: 60000, itemInterval: 5000, deliveryLimit: 120, targetCount: 20,
+      }
+    )
+  },
 })
 
 // 首屏日志
 panel.log('BossHunter 已注入', 'ok')
-panel.log('接口数据：共 128 个，保留 6 个', 'info')
-panel.log('保留 6，筛掉 122：', 'info')
+panel.log('页面上共 128 个职位，符合 6 个', 'info')
+panel.log('符合 6 个，筛掉 122 个：', 'info')
 panel.log('  ✕ 带货主播-播长4小时(5-8K) — 不含关键词: UE', 'warn')
 panel.log('  ✕ 电话客服(4-6K) — 含排除关键词: 客服', 'warn')
-panel.log('已加载更多：卡片 15 → 30，保留 6 个', 'info')
+panel.log('已加载更多：职位 15 → 30，符合 6 个', 'info')
 
 function apply(s: typeof state) {
   state = s
@@ -102,10 +116,10 @@ function apply(s: typeof state) {
   panel.setStats(s === 'empty' ? 128 : 128, matched.length, s !== 'stale')
   panel.setStatus(
     s === 'empty'
-      ? '已筛选：共 128 个，保留 0 个'
+      ? '已筛选：共 128 个，符合 0 个'
       : s === 'running'
         ? '第 2/5 轮（本轮 5 个）'
-        : '接口数据：共 128 个，保留 6 个',
+        : '页面上共 128 个职位，符合 6 个',
     s === 'empty' ? 'warn' : 'info',
   )
   panel.setRunning(s === 'running')
@@ -118,15 +132,17 @@ apply('ready')
 ;(window as any).__BH_HARNESS__ = {
   apply,
   tab: (t: 'preview' | 'log' | 'settings') => {
-    // 与真实页签按钮一致：进设置前先异步加载预设再渲染表单
-    if (t === 'settings') void (panel as any).openSettings()
+    // 与真实页签按钮一致：switchTab 内部会同步渲染设置页并异步补齐预设
     ;(panel as any).switchTab(t)
   },
-  /** 等预设加载完成后渲染一次设置页（测试用） */
+  /** 兼容旧测试：等设置页渲染完成（现在是同步渲染 + 异步补预设） */
   openSettings: async () => {
-    await (panel as any).openSettings()
+    ;(panel as any).switchTab('settings')
+    await new Promise((r) => setTimeout(r, 60))
     return true
   },
+  /** 打开投递确认层（测试用） */
+  openConfirm: () => (panel as any).openConfirm(),
   fillSettings: () => {
     cfg.filters.jobTitle.value = ['UE', 'unity']
     cfg.filters.excludeKeywords = ['客服', '销售']
@@ -140,7 +156,6 @@ for (const btn of document.querySelectorAll<HTMLElement>('[data-state]')) {
 for (const btn of document.querySelectorAll<HTMLElement>('[data-tab]')) {
   btn.addEventListener('click', () => {
     const t = btn.dataset.tab as 'preview' | 'log' | 'settings'
-    if (t === 'settings') (panel as any).renderSettings()
     ;(panel as any).switchTab(t)
   })
 }

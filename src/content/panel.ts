@@ -1,17 +1,20 @@
-import type { AppConfig, BossActive, ExperienceFilter, JobItem, RangeSetting, TimeInterval } from '../lib/types'
+import type { AppConfig, BossActive, ExperienceFilter, JobItem, RangeSetting, TimeInterval, AdvancedDefaults } from '../lib/types'
 import { BOSS_ACTIVE_LABELS, EXPERIENCE_LABELS } from '../lib/types'
 import { addPreset, loadPresets, removePreset } from '../lib/preset-store'
 import type { FilterPreset } from '../lib/presets'
-import { describePreset, extractPresetData } from '../lib/presets'
+import { BUILTIN_PRESETS, describePreset, extractPresetData } from '../lib/presets'
 import { ICON, LOGO_MARK } from './ui/icons'
 import { PANEL_CSS, LOCATE_CSS } from './ui/styles'
+import { renderGreeting } from '../lib/greeting'
+import { SAFETY } from '../lib/safety'
 
 type LogLevel = 'info' | 'ok' | 'warn'
 export type TabName = 'preview' | 'log' | 'settings'
 
 export interface PanelHandlers {
   onRefresh: () => Promise<void>
-  onRun: () => Promise<void>
+  /** 用户在确认层点了「确认发送」后，才真正开始群发（唯一的不可逆动作） */
+  onConfirmSend: () => Promise<void>
   onStop: () => void
   onPause: () => void
   onDebug: () => void
@@ -26,6 +29,10 @@ export interface PanelHandlers {
   /** 点击预览里的一条 → 滚动页面到该职位在列表中的位置（并高亮） */
   onLocateJob: (key: string) => void
   onSave: (cfg: AppConfig) => Promise<void>
+  /** 把当前节奏/上限存为「高级设置默认值」 */
+  onSaveAdvancedDefaults: (v: AdvancedDefaults) => void
+  /** 取「高级设置默认值」：有自定义用自定义，否则用推荐值 */
+  getAdvancedDefaults: () => AdvancedDefaults
 }
 
 const ACTIVE_OPTIONS: { value: BossActive; label: string }[] = (Object.keys(BOSS_ACTIVE_LABELS) as BossActive[])
@@ -124,13 +131,17 @@ export class Panel {
   private tabClicks = 0
   /** 高度补间的收尾定时器 */
   private heightTimer = 0
-  private openSections = new Set<string>(['presets', 'keywords', 'salary'])
+  private openSections = new Set<string>(['keywords', 'salary'])
   private currentTab: TabName = 'preview'
   private lastStatus = { text: '', warn: false }
-  /** 已加载的筛选预设 */
-  private presets: FilterPreset[] = []
+  /** 已加载的筛选预设（先放内置，避免首屏空白；进设置页时再从 storage 补齐自定义） */
+  private presets: FilterPreset[] = [...BUILTIN_PRESETS]
   /** 刚应用但尚未保存的预设（用于日志提示） */
   private pendingPreset: FilterPreset | null = null
+  /** 表单是否有未保存的改动（驱动底部提示条与按钮文案） */
+  private settingsDirty = false
+  /** 打开确认层前的焦点元素，关闭后还原 */
+  private confirmReturnFocus: HTMLElement | null = null
 
   constructor(private handlers: PanelHandlers) {
     this.root = document.createElement('div')
@@ -234,7 +245,7 @@ export class Panel {
 
         <div class="bh-summary">
           <div class="bh-counts">
-            <b id="bh-matched">0</b><em>个可投</em>
+            <b id="bh-matched">0</b><em>个可投递</em>
             <span class="bh-sep">·</span>
             <em id="bh-total">尚未读取</em>
             <span class="bh-chip" id="bh-chip" style="display:none">已筛选</span>
@@ -258,9 +269,9 @@ export class Panel {
 
         <div class="bh-tools">
           <button class="bh-tool" id="bh-settings-btn">${ICON.sliders}<span>筛选条件</span></button>
-          <button class="bh-tool" id="bh-refresh">${ICON.refresh}<span>刷新</span></button>
-          <button class="bh-tool" id="bh-more">${ICON.more}<span>查看更多</span></button>
-          <button class="bh-tool" id="bh-showall">${ICON.eye}<span>显示全部</span></button>
+          <button class="bh-tool" id="bh-refresh">${ICON.refresh}<span>重新扫描</span></button>
+          <button class="bh-tool" id="bh-more">${ICON.more}<span>多找一些</span></button>
+          <button class="bh-tool" id="bh-showall">${ICON.eye}<span>看全部</span></button>
         </div>
 
         <div class="bh-status" id="bh-status">等待读取页面</div>
@@ -288,11 +299,28 @@ export class Panel {
         <div class="bh-pane" data-pane="settings">
           <div class="bh-settings-body" id="bh-settings"></div>
           <div class="bh-settings-foot">
-            <button class="bh-cancel" id="bh-cancel">取消</button>
-            <button class="bh-save" id="bh-save">保存并筛选</button>
+            <div class="bh-dirty" id="bh-dirty">有未保存的修改，不会自动生效</div>
+            <div class="bh-foot-row">
+              <button class="bh-cancel" id="bh-cancel">返回</button>
+              <button class="bh-save" id="bh-save">保存并筛选</button>
+            </div>
           </div>
         </div>
       </div>
+      </div>
+
+      <div class="bh-confirm" id="bh-confirm">
+        <div class="bh-confirm-card">
+          <div class="bh-confirm-title">确认投递</div>
+          <div class="bh-confirm-line" id="bh-confirm-count">将向 0 家公司发送消息</div>
+          <div class="bh-confirm-quote" id="bh-confirm-quote"></div>
+          <div class="bh-confirm-line" id="bh-confirm-eta"></div>
+          <div class="bh-confirm-warn" id="bh-confirm-warn" style="display:none"></div>
+          <div class="bh-confirm-actions">
+            <button class="bh-confirm-back" id="bh-confirm-back">再看看名单</button>
+            <button class="bh-confirm-go" id="bh-confirm-go">确认发送</button>
+          </div>
+        </div>
       </div>
 
       <div class="bh-grip" id="bh-grip"></div>
@@ -310,10 +338,14 @@ export class Panel {
     on('#bh-debug', () => this.handlers.onDebug())
     on('#bh-settings-btn', () => {
       this.tabClicks++
-      void this.openSettings()
       this.switchTab('settings')
     })
-    on('#bh-run', () => void this.handlers.onRun())
+    on('#bh-run', () => this.openConfirm())
+    on('#bh-confirm-back', () => this.closeConfirm())
+    on('#bh-confirm-go', () => {
+      this.closeConfirm()
+      void this.handlers.onConfirmSend()
+    })
     on('#bh-pause', () => this.handlers.onPause())
     on('#bh-stop', () => this.handlers.onStop())
     on('#bh-reload', () => location.reload())
@@ -322,8 +354,12 @@ export class Panel {
       this.updateLogCount()
     })
     on('#bh-log-copy', () => void this.copyLogs())
-    on('#bh-cancel', () => this.switchTab('preview'))
+    on('#bh-cancel', () => void this.cancelSettings())
     on('#bh-save', () => void this.saveFromForm())
+
+    // 表单一旦被改动就标记「有未保存的修改」，让"填了没生效"这件事从一开始就可见
+    this.settingsEl.addEventListener('input', () => this.setDirty(true))
+    this.settingsEl.addEventListener('change', () => this.setDirty(true))
 
     on('#bh-min', () => this.toggleCollapse())
     on('#bh-close', () => {
@@ -336,11 +372,42 @@ export class Panel {
       btn.addEventListener('click', () => {
         const tab = btn.dataset.tab as TabName
         this.tabClicks++
-        if (tab === 'settings') void this.openSettings()
         if (tab === 'preview') this.renderPreview()
         this.switchTab(tab)
       })
     }
+
+    // 确认层：Esc 关闭、点遮罩关闭
+    this.root.querySelector('#bh-confirm')!.addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) this.closeConfirm()
+    })
+    this.root.addEventListener('keydown', (e) => {
+      const confirm = this.root.querySelector<HTMLElement>('#bh-confirm')!
+      if (!confirm.classList.contains('show')) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        this.closeConfirm()
+        return
+      }
+      // 焦点陷阱：确认层打开时 Tab 只在层内循环，不能穿到背后的按钮
+      if (e.key === 'Tab') {
+        const items = Array.from(confirm.querySelectorAll<HTMLElement>('button:not([disabled])'))
+        if (!items.length) return
+        const first = items[0]
+        const last = items[items.length - 1]
+        const active = document.activeElement as HTMLElement | null
+        if (!active || !confirm.contains(active)) {
+          e.preventDefault()
+          first.focus()
+        } else if (e.shiftKey && active === first) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault()
+          first.focus()
+        }
+      }
+    })
 
     // 预览区「重试 / 排除 / 定位到列表」事件委托
     this.previewEl.addEventListener('click', (e) => {
@@ -373,46 +440,12 @@ export class Panel {
       this.handlers.onLocateJob(row.dataset.key ?? '')
     })
 
-    // 设置区展开状态记忆 + 面板高度补间
-    // toggle 事件在状态已改变后才触发，所以先在点击 summary 时记下旧高度
-    let heightBeforeToggle = 0
-    this.settingsEl.addEventListener(
-      'click',
-      (e) => {
-        const summary = (e.target as HTMLElement).closest('summary')
-        if (!summary) return
-        heightBeforeToggle = this.root.getBoundingClientRect().height
-      },
-      true,
-    )
-    this.settingsEl.addEventListener(
-      'toggle',
-      (e) => {
-        const d = e.target as HTMLDetailsElement
-        if (!d.dataset.sec) return
-        if (d.open) this.openSections.add(d.dataset.sec)
-        else this.openSections.delete(d.dataset.sec)
-        this.animateHeightFrom(heightBeforeToggle)
-      },
-      true,
-    )
-  }
-
-  /** 从指定旧高度补间到当前真实高度（供 details 展开这类"先变后通知"的场景使用） */
-  private animateHeightFrom(from: number) {
-    if (this.root.classList.contains('collapsed')) return
-    const to = this.root.getBoundingClientRect().height
-    if (!from || !to || Math.abs(from - to) < 1) return
-    const el = this.root
-    el.classList.add('is-resizing-height')
-    el.style.height = `${from}px`
-    void el.offsetHeight
-    el.style.height = `${to}px`
-    clearTimeout(this.heightTimer)
-    this.heightTimer = window.setTimeout(() => {
-      el.style.height = ''
-      el.classList.remove('is-resizing-height')
-    }, 300)
+    // 设置区分组的展开/收起（button 点击 → 手写高度补间）
+    this.settingsEl.addEventListener('click', (e) => {
+      const head = (e.target as HTMLElement).closest<HTMLElement>('.bh-sec-sum')
+      if (!head) return
+      this.toggleSection(head)
+    })
   }
 
   // ---------------------------------------------------------------- 状态
@@ -422,7 +455,11 @@ export class Panel {
     this.lastStatus = { text, warn: level === 'warn' }
     this.statusEl.textContent = text
     this.statusEl.classList.toggle('warn', level === 'warn')
-    this.headSubEl.textContent = text.length > 18 ? `${text.slice(0, 18)}…` : text
+    // 头部副标题只放"一眼能读完的一句"：短文案照常显示，超长就收成状态词，
+    // 不再把数字截成「保留 6…」这种看着像 bug 的半截话。
+    if (text.length <= 16) this.headSubEl.textContent = text
+    else if (level === 'warn') this.headSubEl.textContent = '需要处理'
+    else this.headSubEl.textContent = this.running ? '投递中' : '就绪'
   }
 
   setStats(total: number, matched: number, filtering = false) {
@@ -458,6 +495,7 @@ export class Panel {
     this.runBtn.style.display = running ? 'none' : ''
     this.runbarEl.classList.toggle('on', running)
     if (running) {
+      this.closeConfirm()
       this.pauseBtn.innerHTML = `${ICON.pause}<span>暂停</span>`
     } else {
       this.progressEl.classList.remove('on')
@@ -588,34 +626,76 @@ export class Panel {
     const toolBtn = this.root.querySelector('#bh-settings-btn')
     toolBtn?.classList.toggle('active', tab === 'settings')
 
-    // 进设置页时收起顶部工作台（grid 行高 + 淡出过渡，不是 display:none）。
-    // 必须在量高度之前切换，这样高度补间的目标值就已经包含工作台收起后的高度。
-    this.root.classList.toggle('mode-settings', tab === 'settings')
+    // 设置页内容必须在切换前「同步」就绪，避免先按空表单渲染再被填满造成跳变
+    if (tab === 'settings') this.renderSettings()
 
-    // 在改 DOM 前先记下当前高度，改完再动到新高度，才有连续的过渡
-    this.animateHeightTo(() => {
-      for (const btn of this.tabBtns) btn.classList.toggle('active', btn.dataset.tab === tab)
-      for (const pane of Array.from(this.root.querySelectorAll<HTMLElement>('.bh-pane'))) {
-        pane.classList.toggle('active', pane.dataset.pane === tab)
-      }
-      if (tab === 'preview') this.renderPreview()
-    })
+    // 高度过渡完全交给 CSS：切到设置页时 .bh-work 自己 grid 1fr→0fr 收起（带动画），
+    // 面板 root 是 auto 高度，会随工作台一起平滑收缩。这里只切类名/内容，不再由 JS 强行写高度，
+    // 避免"工作台动画 + root 补间"两个高度动画打架（那正是之前抽风的原因）。
+    this.root.classList.toggle('mode-settings', tab === 'settings')
+    for (const btn of this.tabBtns) btn.classList.toggle('active', btn.dataset.tab === tab)
+    for (const pane of Array.from(this.root.querySelectorAll<HTMLElement>('.bh-pane'))) {
+      pane.classList.toggle('active', pane.dataset.pane === tab)
+    }
+    if (tab === 'preview') this.renderPreview()
+
+    // 预设可能存在 storage 里、首次还没读出来：异步补齐后若高度变了再补一段 root 过渡
+    if (tab === 'settings') void this.reloadPresetsThenRerender()
+  }
+
+  /** 首次进入设置页时异步补齐预设，若内容高度变了就补一次高度过渡，避免硬跳 */
+  private async reloadPresetsThenRerender() {
+    const beforeCount = this.presets.length
+    try {
+      const list = await loadPresets()
+      if (this.currentTab !== 'settings') return
+      // 数量没变就没必要重渲染，避免打断用户正在填的表单
+      if (list.length === beforeCount) return
+      this.presets = list
+      const dirty = this.settingsDirty
+      // 用"先关过渡量出真实终值再补一次"的稳定补间，避免与工作台收起动画叠加
+      this.animateHeightTo(() => {
+        this.renderSettings()
+        // 重渲染会重置脏标记，若用户已有未保存改动则保留提示
+        this.setDirty(dirty)
+      })
+    } catch {
+      /* 读不到预设就保持同步渲染的结果 */
+    }
   }
 
   /**
    * 内容变化引起面板高度改变时，做一次高度补间。
-   * 面板是 content-fit 高度，直接对 auto 做 transition 无效，
-   * 所以先量旧高度 -> 同步改 DOM -> 量新高度 -> 从旧值过渡到新值 -> 结束后还原 auto。
+   *
+   * 关键（抽风的根源）：目标高度必须在"所有内部过渡都已落定"的状态下量，否则会量到中间值。
+   * 例如切到设置页时，顶部工作台还在用自身的 grid 过渡收起（约 228px），
+   * 若此刻量高度，会把还没收完的工作台算进去 → 目标偏大 → 过渡到偏大值后再砸回真实值。
+   * 所以这里先临时关掉一切过渡、应用 mutate、量出真实终值，再只对 root 做一次 from→to 过渡。
    */
   private animateHeightTo(mutate: () => void) {
     if (this.root.classList.contains('collapsed')) {
-      // 收起态只显示头部，不需要高度补间
       mutate()
       return
     }
-    const from = this.root.getBoundingClientRect().height
+    const el = this.root
+    const from = el.getBoundingClientRect().height
+    el.classList.add('bh-measuring')
     mutate()
-    this.animateHeightFrom(from)
+    const to = el.getBoundingClientRect().height
+    el.classList.remove('bh-measuring')
+    if (!from || !to || Math.abs(from - to) < 1) return
+    // 先无过渡地把高度钉到 from，再恢复过渡、设到 to，保证只有一次缓动
+    el.classList.add('bh-measuring')
+    el.style.height = `${from}px`
+    void el.offsetHeight
+    el.classList.remove('bh-measuring')
+    el.classList.add('is-resizing-height')
+    el.style.height = `${to}px`
+    clearTimeout(this.heightTimer)
+    this.heightTimer = window.setTimeout(() => {
+      el.style.height = ''
+      el.classList.remove('is-resizing-height')
+    }, 300)
   }
 
   /**
@@ -656,7 +736,6 @@ export class Panel {
       this.setPageOffset(true)
     }
     if (tab && tab !== 'preview') {
-      if (tab === 'settings') void this.openSettings()
       this.switchTab(tab)
     }
     this.applyCompactMode()
@@ -876,35 +955,114 @@ export class Panel {
           : '正在投递，可随时暂停'
     } else if (!this.filtering) {
       hint = this.totalJobs
-        ? '还没设置筛选条件。不设条件将投递当前列表里的全部职位。'
+        ? `页面上共 ${this.totalJobs} 个职位，还没设置筛选条件。不设条件将投递全部职位。`
         : '正在读取页面上的职位…'
     } else if (this.matchedJobs === 0) {
-      hint = '没有职位通过当前筛选。可以放宽条件，或点「查看更多」多加载几页。'
+      hint = '没有职位符合当前筛选条件。可以放宽条件，或点「多找一些」再加载几页。'
       warn = true
     } else if (this.candidates === 0) {
       hint =
         this.matchedJobs > 0
-          ? `通过筛选的 ${this.matchedJobs} 个职位都还没渲染出卡片，先上下滚动列表让它们出现。`
+          ? `符合的 ${this.matchedJobs} 个职位还没在页面上显示出来，先上下滚动一下列表。`
           : '符合条件的职位都已被排除。到预览里恢复几个再投递。'
       warn = true
     } else {
-      // 通过筛选 ≠ 能投：接口翻页拿到的职位如果没有对应卡片，是点不了的。
-      // 这里把差异明确说出来，避免用户以为"可投 32 个"结果只投出去 15 个。
+      // 符合 ≠ 能投：接口翻页拿到的职位如果页面上没渲染出卡片，是点不了的。
+      // 把差异直接说清楚，避免用户以为"能投 32 个"结果只投出去 15 个。
       const gap = this.matchedJobs - this.candidates
       hint =
         gap > 0
-          ? `已筛出 ${this.matchedJobs} 个，其中 ${this.candidates} 个可以投递（${gap} 个尚未渲染出卡片）。`
-          : `已筛出 ${this.matchedJobs} 个，确认名单后即可开始投递。`
+          ? `符合 ${this.matchedJobs} 个，其中 ${this.candidates} 个现在能投（${gap} 个还没在页面上显示）。`
+          : `符合 ${this.matchedJobs} 个，确认名单后即可投递。`
     }
     this.hintEl.textContent = hint
     this.hintEl.classList.toggle('is-warn', warn)
 
     if (!this.running) {
-      const label = this.candidates > 0 ? `开始投递 ${this.candidates} 个` : '开始投递'
+      const label = this.candidates > 0 ? `投递这 ${this.candidates} 个` : '开始投递'
       this.runBtn.innerHTML = `${ICON.play}<span>${label}</span>`
     }
     const disabled = this.candidates === 0 && !this.running
     this.runBtn.disabled = disabled
+  }
+
+  // ---------------------------------------------------------------- 投递确认
+
+  /**
+   * 打开确认层。这是唯一的不可逆动作（给真人 BOSS 发消息），必须先过这道闸：
+   * 说清楚"发给谁、发什么、大概多久"，而不是一个裸按钮点下去就群发。
+   */
+  private openConfirm() {
+    const n = this.candidates
+    if (n <= 0) return
+    const cfg = this.handlers.getConfig()
+
+    this.root.querySelector('#bh-confirm-count')!.innerHTML =
+      `将向 <b>${n}</b> 家公司的 BOSS 发送消息`
+
+    // 招呼语：按预览里第一条可投职位渲染，让用户看到真实会发出去的内容
+    const first = this.handlers.getMatched().find((j) => !this.handlers.getExcluded().has(j.key))
+    const quoteEl = this.root.querySelector('#bh-confirm-quote')!
+    if (cfg.autoGreet && (cfg.greetTemplate || '').trim()) {
+      const text = renderGreeting(cfg.greetTemplate, {
+        jobName: first?.jobName ?? '',
+        company: first?.company ?? '',
+        bossName: first?.bossName ?? '',
+        salary: first?.salaryDesc ?? '',
+      })
+      quoteEl.textContent = text || '（招呼语为空）'
+    } else {
+      quoteEl.textContent = '将发送 BOSS 账号里预设的招呼语'
+    }
+
+    // 预计耗时：按每条间隔中位数 + 条数估算（粗略即可，目的是给个量级）
+    const iv = cfg.schedule.itemInterval
+    const perMs = iv.mode === 'range' && iv.max > iv.min ? (iv.min + iv.max) / 2 : iv.fixed
+    const sec = Math.max(0, Math.round((perMs * n) / 1000))
+    const eta = sec >= 60 ? `约 ${Math.floor(sec / 60)} 分 ${sec % 60} 秒` : `约 ${sec} 秒`
+    this.root.querySelector('#bh-confirm-eta')!.innerHTML =
+      `预计耗时 <b>${eta}</b>（每条间隔约 ${Math.round(perMs / 1000)} 秒）· 今日上限 ${cfg.deliveryLimit} 条`
+
+    // 没有设置任何筛选时，明确警告"要投全部"，并用更重的红色确认按钮
+    const warnEl = this.root.querySelector<HTMLElement>('#bh-confirm-warn')!
+    const goBtn = this.root.querySelector<HTMLElement>('#bh-confirm-go')!
+    if (!this.filtering) {
+      warnEl.style.display = ''
+      warnEl.textContent = `你还没有设置任何筛选条件，这会把页面上的全部 ${n} 个职位都投一遍。`
+      goBtn.classList.add('is-danger')
+    } else {
+      warnEl.style.display = 'none'
+      goBtn.classList.remove('is-danger')
+    }
+
+    this.root.querySelector('#bh-confirm')!.classList.remove('closing')
+    this.root.querySelector('#bh-confirm')!.classList.add('show')
+    // 焦点管理：焦点先落到「再看看名单」（安全选项），并记住打开前的焦点以便关闭后还原
+    this.confirmReturnFocus = (document.activeElement as HTMLElement | null) ?? null
+    const backBtn = this.root.querySelector<HTMLButtonElement>('#bh-confirm-back')
+    backBtn?.focus()
+  }
+
+  private closeConfirm() {
+    const el = this.root.querySelector<HTMLElement>('#bh-confirm')!
+    if (!el.classList.contains('show')) return
+    el.classList.remove('show')
+    el.classList.add('closing')
+    // 退场动画播完再移除 .closing（display:none 由 .closing 撤下后回到基础规则）
+    const done = () => {
+      el.classList.remove('closing')
+      el.removeEventListener('animationend', done)
+    }
+    el.addEventListener('animationend', done)
+    // 兜底：某些环境不触发 animationend，超时也要收尾
+    window.setTimeout(done, 320)
+    // 关闭后把焦点还给打开它的按钮；鼠标点击时 activeElement 常是 body，兜底回主按钮
+    const back =
+      this.confirmReturnFocus && document.contains(this.confirmReturnFocus) && this.confirmReturnFocus !== document.body
+        ? this.confirmReturnFocus
+        : this.root.querySelector<HTMLElement>('#bh-run')
+    back?.focus()
+    this.confirmReturnFocus = null
   }
 
   private emptyState(icon: string, title: string, body: string, action?: { id: string; label: string }) {
@@ -918,14 +1076,27 @@ export class Panel {
 
   private renderPreview() {
     const jobs = this.handlers.getMatched()
-    const retries = this.handlers.getRetry()
     const excluded = this.handlers.getExcluded()
 
-    if (!jobs.length && !retries.length) {
+    // 同一职位不能既在「这些没发出去」又在「可投递」里出现（以前会重复渲染，用户根本分不清投没投）。
+    // 规则：已进入重试队列的只在上方区块出现，主列表不再重复；已被排除的照常显示以便恢复。
+    const retries = this.handlers.getRetry().filter((r) => !excluded.has(r.job.key))
+    const retryKeys = new Set(retries.map((r) => r.job.key))
+
+    // 列表自身也去重（接口翻页与 DOM 可能带出同一 key）
+    const seen = new Set<string>()
+    const uniqJobs: typeof jobs = []
+    for (const j of jobs) {
+      if (seen.has(j.key)) continue
+      seen.add(j.key)
+      uniqJobs.push(j)
+    }
+
+    if (!uniqJobs.length && !retries.length) {
       const reading = this.totalJobs === 0
       this.previewEl.innerHTML = reading
         ? this.emptyState(ICON.inbox, '还没有读到职位', '请在 Boss 直聘的职位列表页使用；列表加载完成后这里会自动出现名单。')
-        : this.emptyState(ICON.inbox, '没有职位通过筛选', '放宽薪资/关键词条件，或点「查看更多」多加载几页。', {
+        : this.emptyState(ICON.inbox, '没有职位符合筛选条件', '放宽薪资或关键词条件，或点「多找一些」再加载几页。', {
             id: 'settings',
             label: '调整筛选条件',
           })
@@ -936,7 +1107,7 @@ export class Panel {
     let html = ''
     if (retries.length) {
       html += `<div class="bh-failbox">
-        <div class="bh-grouphd">${ICON.alert}<span>待重试</span><span class="bh-grouphd-n">${retries.length}</span></div>
+        <div class="bh-grouphd">${ICON.alert}<span>这些没发出去</span><span class="bh-grouphd-n">${retries.length}</span></div>
         <div class="bh-list">`
       for (const r of retries) {
         const name = r.job.jobName || '未知职位'
@@ -951,28 +1122,50 @@ export class Panel {
       html += `</div></div>`
     }
 
-    const kept = jobs.filter((j) => !excluded.has(j.key))
-    html += `<div class="bh-grouphd">${ICON.check}<span>筛选通过</span><span class="bh-grouphd-n">${kept.length}</span>`
+    // 「可投递」= 符合条件、没被排除、也不在待重试里（避免同一职位出现两次）
+    const kept = uniqJobs.filter((j) => !excluded.has(j.key) && !retryKeys.has(j.key))
+    html += `<div class="bh-grouphd">${ICON.check}<span>可投递</span><span class="bh-grouphd-n">${kept.length}</span>`
     if (excluded.size) html += `<span style="margin-left:auto;font-weight:400;color:var(--bh-ink-3);font-size:11px;">已排除 ${excluded.size}</span>`
     html += `</div><div class="bh-list">`
 
-    for (const j of jobs) {
+    for (const j of kept) {
       const name = j.jobName || '未知职位'
       const salary = j.salaryDesc || '薪资未知'
-      const isEx = excluded.has(j.key)
       const sub = [j.company, j.address, j.activeText].filter(Boolean).join(' · ')
-      html += `<div class="bh-row bh-row-open${isEx ? ' is-excluded' : ''}" data-key="${esc(j.key)}" role="button" tabindex="0" title="点击定位到列表中的这个职位">
+      html += `<div class="bh-row bh-row-open" data-key="${esc(j.key)}" role="button" tabindex="0" title="点击定位到列表中的这个职位">
         <div class="bh-row-main">
           <span class="bh-row-name" title="${esc(name)}">${esc(name)}</span>
           <span class="bh-row-sub"><span title="${esc(sub)}">${esc(sub || '—')}</span></span>
         </div>
         <span class="bh-row-salary">${esc(salary)}</span>
         <div class="bh-row-actions">
-          <button class="bh-minibtn danger bh-exclude${isEx ? ' ok' : ''}" data-key="${esc(j.key)}">${isEx ? '恢复' : '排除'}</button>
+          <button class="bh-minibtn danger bh-exclude" data-key="${esc(j.key)}">排除</button>
         </div>
       </div>`
     }
     html += `</div>`
+
+    // 已排除的单独一组，避免混在"可投递"里让人误以为会被投出去
+    if (excluded.size) {
+      const exJobs = uniqJobs.filter((j) => excluded.has(j.key))
+      html += `<div class="bh-grouphd" style="margin-top:14px;">${ICON.close}<span>已排除</span><span class="bh-grouphd-n">${exJobs.length}</span></div><div class="bh-list">`
+      for (const j of exJobs) {
+        const name = j.jobName || '未知职位'
+        const salary = j.salaryDesc || '薪资未知'
+        const sub = [j.company, j.address, j.activeText].filter(Boolean).join(' · ')
+        html += `<div class="bh-row bh-row-open is-excluded" data-key="${esc(j.key)}" role="button" tabindex="0" title="点击定位到列表中的这个职位">
+          <div class="bh-row-main">
+            <span class="bh-row-name" title="${esc(name)}">${esc(name)}</span>
+            <span class="bh-row-sub"><span title="${esc(sub)}">${esc(sub || '—')}</span></span>
+          </div>
+          <span class="bh-row-salary">${esc(salary)}</span>
+          <div class="bh-row-actions">
+            <button class="bh-minibtn ok bh-exclude" data-key="${esc(j.key)}">恢复</button>
+          </div>
+        </div>`
+      }
+      html += `</div>`
+    }
     this.previewEl.innerHTML = html
     this.bindEmptyAction()
   }
@@ -980,7 +1173,6 @@ export class Panel {
   private bindEmptyAction() {
     const btn = this.previewEl.querySelector<HTMLElement>('[data-action="settings"]')
     btn?.addEventListener('click', () => {
-      void this.openSettings()
       this.switchTab('settings')
     })
   }
@@ -1024,61 +1216,106 @@ export class Panel {
     return `<select class="bh-input${on}" data-k="${key}">${opts}</select>`
   }
 
-  private numInput(k: string, value: number, unit: string, min = 0) {
-    // 用 text + inputmode 而不是 number：新版 Chromium 的原生上下箭头压不住，
-    // 会盖住右侧单位文字。数值在 saveFromForm 里统一 Number() 转换。
-    return `<div class="bh-num">
-      <input type="text" inputmode="numeric" autocomplete="off" data-k="${k}" data-min="${min}" value="${value}">
-      <span class="bh-unit">${unit}</span>
+  /**
+   * 数值控件：滑块 + 可编辑数值气泡。
+   * 拖动/滚轮/方向键都能快速调，点数字仍可精调。
+   * 滑块与输入框双向同步；data-k 仍落在 input 上，保存逻辑无需改。
+   */
+  private numInput(
+    k: string,
+    value: number,
+    unit: string,
+    min = 0,
+    opts: { max?: number; step?: number; scale?: [string, string] } = {},
+  ) {
+    const max = opts.max ?? Math.max(min + 10, Math.ceil(value * 2) || min + 10)
+    const step = opts.step ?? 1
+    const v = Number.isFinite(value) ? value : min
+    const pct = max > min ? Math.round(((v - min) / (max - min)) * 100) : 0
+    const scale = opts.scale
+      ? `<div class="bh-slider-scale"><span>${esc(opts.scale[0])}</span><span>${esc(opts.scale[1])}</span></div>`
+      : ''
+    return `<div class="bh-slider" data-slider="${k}">
+      <div class="bh-slider-row">
+        <input class="bh-range" type="range" data-range="${k}" min="${min}" max="${max}" step="${step}" value="${v}" style="--bh-fill:${pct}%" aria-label="${esc(k)}">
+        <span class="bh-num">
+          <input type="text" inputmode="numeric" autocomplete="off" data-k="${k}" data-min="${min}" data-max="${max}" data-step="${step}" value="${v}">
+          <span class="bh-unit">${unit}</span>
+        </span>
+      </div>
+      ${scale}
     </div>`
   }
 
   private intervalGroup(title: string, iv: TimeInterval, k: string) {
     const isRange = iv.mode === 'range'
+    // 秒数滑块量程取自平台安全边界（低于下限禁止，防止被风控）
+    const b = k === 'roundInterval' ? SAFETY.roundIntervalSec : SAFETY.itemIntervalSec
     return `<div class="bh-fg">
       <div class="bh-fg-head"><span class="bh-fg-label">${title}</span></div>
-      <div class="bh-grid2">
-        <label class="bh-fg" style="margin:0;">
-          <span class="bh-fg-head" style="margin:0 0 5px;"><span class="bh-fg-label">方式</span></span>
-          <select class="bh-input" data-k="${k}-mode">
-            <option value="fixed"${isRange ? '' : ' selected'}>固定间隔</option>
-            <option value="range"${isRange ? ' selected' : ''}>随机区间</option>
-          </select>
-        </label>
-        <label class="bh-fg" style="margin:0;">
-          <span class="bh-fg-head" style="margin:0 0 5px;"><span class="bh-fg-label">${isRange ? '上限' : '间隔'}</span></span>
-          ${this.numInput(`${k}-fixed`, Math.round(iv.fixed / 1000) || 30, '秒', 1)}
-        </label>
+      ${this.fg(
+        '方式',
+        `<select class="bh-input" data-k="${k}-mode">
+          <option value="fixed"${isRange ? '' : ' selected'}>固定间隔</option>
+          <option value="range"${isRange ? ' selected' : ''}>随机区间</option>
+        </select>`,
+      )}
+      ${this.fg(
+        isRange ? '上限' : '间隔',
+        this.numInput(`${k}-fixed`, Math.round(iv.fixed / 1000) || b.min, '秒', b.min, { max: b.max, step: 1, scale: [String(b.min), String(b.max)] }),
+      )}
+      <div class="bh-fg-hidden" data-when="${k}-range">
+        ${this.fg('最小', this.numInput(`${k}-min`, Math.round(iv.min / 1000) || b.min, '秒', b.min, { max: b.max, step: 1 }))}
+        ${this.fg('最大', this.numInput(`${k}-max`, Math.round(iv.max / 1000) || b.min, '秒', b.min, { max: b.max, step: 1 }))}
       </div>
-      <div class="bh-grid2 bh-fg-hidden" data-when="${k}-range" style="margin-top:8px;">
-        <label class="bh-fg" style="margin:0;">
-          <span class="bh-fg-head" style="margin:0 0 5px;"><span class="bh-fg-label">最小</span></span>
-          ${this.numInput(`${k}-min`, Math.round(iv.min / 1000), '秒')}
-        </label>
-        <label class="bh-fg" style="margin:0;">
-          <span class="bh-fg-head" style="margin:0 0 5px;"><span class="bh-fg-label">最大</span></span>
-          ${this.numInput(`${k}-max`, Math.round(iv.max / 1000), '秒')}
-        </label>
-      </div>
+      <div class="bh-fg-help">安全下限：${k === 'roundInterval' ? '轮间隔' : '每条间隔'}不得低于 <b>${b.min} 秒</b>，更低容易被平台判定为脚本。</div>
     </div>`
   }
 
-  private section(id: string, title: string, body: string, hint?: string) {
-    const open = this.openSections.has(id) ? ' open' : ''
-    return `<details class="bh-sec" data-sec="${id}"${open}>
-      <summary>${ICON.chevright}<span>${title}</span>${hint ? `<span class="bh-sec-hint">${hint}</span>` : ''}</summary>
-      <div class="bh-sec-body">${body}</div>
-    </details>`
+  private section(id: string, title: string, body: string, hint?: string, extraClass = '') {
+    const open = this.openSections.has(id)
+    return `<div class="bh-sec${open ? ' open' : ''}${extraClass ? ' ' + extraClass : ''}" data-sec="${id}">
+      <button type="button" class="bh-sec-sum">${ICON.chevright}<span>${title}</span>${hint ? `<span class="bh-sec-hint">${hint}</span>` : ''}</button>
+      <div class="bh-sec-body"><div class="bh-sec-inner">${body}</div></div>
+    </div>`
   }
 
-  /** 异步加载预设后再渲染（预设存在 chrome.storage 里） */
-  private async openSettings() {
-    try {
-      this.presets = await loadPresets()
-    } catch {
-      this.presets = []
+  /**
+   * 分组展开/收起：直接把内容高度写进 style.height 做补间。
+   * 用 button + 手写高度动画，而不是 <details>：后者在新版 Chrome 用 content-visibility
+   * 隐藏内容，内部的高度过渡整体失效（实测动画纹丝不动）。
+   */
+  private toggleSection(head: HTMLElement) {
+    const sec = head.parentElement as HTMLElement
+    if (!sec?.classList.contains('bh-sec')) return
+    const id = sec.dataset.sec!
+    const opening = !sec.classList.contains('open')
+    // 纯粹切换 open 类，高度过渡交给 CSS（grid 0fr<->1fr）。
+    // 不再手算 from/to：手算在"连续点击"时会和目标值打架，正是抽风的来源。
+    sec.classList.toggle('open', opening)
+    if (opening) this.openSections.add(id)
+    else this.openSections.delete(id)
+  }
+
+  /** 有未保存改动时，底部提示条 + 左侧按钮文案都要跟着变，代价才明确 */
+  private setDirty(v: boolean) {
+    this.settingsDirty = v
+    this.root.querySelector('#bh-dirty')?.classList.toggle('show', v)
+    const cancel = this.root.querySelector<HTMLElement>('#bh-cancel')
+    if (cancel) {
+      cancel.textContent = v ? '放弃修改' : '返回'
+      cancel.classList.toggle('is-dirty', v)
     }
-    this.renderSettings()
+  }
+
+  /** 设置页的「返回 / 放弃修改」：有未保存改动时先重渲染表单丢弃改动，再回预览 */
+  private cancelSettings() {
+    if (this.settingsDirty) {
+      // 重新渲染会用已保存的配置覆盖表单，等于丢弃未保存的改动
+      this.renderSettings()
+      this.log('已放弃未保存的修改', 'info')
+    }
+    this.switchTab('preview')
   }
 
   private renderSettings() {
@@ -1103,7 +1340,7 @@ export class Panel {
       const otherOn = [f.goldHunter, f.bossGoldMedalHr, f.friendStatus, f.excludeNegotiable].filter(Boolean).length
 
       const kwBody =
-        `<p class="bh-sec-lead">每行一组；同一行里用空格分隔的词需要全部命中。填写即生效。</p>` +
+        `<p class="bh-sec-lead">每行一组；同一行里用空格分隔的词需要全部命中。改完点底部「保存并筛选」才生效。</p>` +
         this.fg('职位名', this.kwBox('jobTitle', f.jobTitle.value, '如：前端 / UE / 数字孪生', f.jobTitle.include !== false)) +
         this.fg('公司名', this.kwBox('company', f.company.value, '如：腾讯 / 字节', f.company.include !== false)) +
         this.fg('标签 / 技能', this.kwBox('tags', f.tags.value, '如：居家办公、外包、可转正', f.tags.include !== false)) +
@@ -1145,19 +1382,15 @@ export class Panel {
         <label class="bh-check"><input type="checkbox" data-k="excludeNegotiable"${f.excludeNegotiable ? ' checked' : ''}><span>剔除薪资面议</span></label>`
 
       const schedBody =
-        `<div class="bh-grid2">
-          ${this.fg('每轮数量', this.numInput('roundSize', cfg.schedule.roundSize, '条', 1))}
-          ${this.fg('额外加载页数', this.numInput('loadPages', cfg.schedule.loadPages, '页'))}
-        </div>
+        `${this.fg('每轮数量', this.numInput('roundSize', cfg.schedule.roundSize, '条', SAFETY.roundSize.min, { max: SAFETY.roundSize.max, scale: [String(SAFETY.roundSize.min), String(SAFETY.roundSize.max)] }))}
+        ${this.fg('额外加载页数', this.numInput('loadPages', cfg.schedule.loadPages, '页', SAFETY.loadPages.min, { max: SAFETY.loadPages.max, scale: ['0', String(SAFETY.loadPages.max)] }))}
         ${this.intervalGroup('轮与轮之间', cfg.schedule.roundInterval, 'roundInterval')}
         ${this.intervalGroup('每条投递之间', cfg.schedule.itemInterval, 'itemInterval')}`
 
       const limitBody =
-        `<div class="bh-grid2">
-          ${this.fg('每日投递上限', this.numInput('deliveryLimit', cfg.deliveryLimit, '条', 1))}
-          ${this.fg('目标职位数', this.numInput('targetCount', cfg.targetCount ?? 20, '条', 1))}
-        </div>
-        <div class="bh-fg-help" style="margin-top:-4px;">点「查看更多」会持续加载，直到凑满目标职位数或列表到底。</div>`
+        `${this.fg('每日投递上限', this.numInput('deliveryLimit', cfg.deliveryLimit, '条', SAFETY.deliveryLimit.min, { max: SAFETY.deliveryLimit.max, step: 5, scale: [String(SAFETY.deliveryLimit.min), String(SAFETY.deliveryLimit.max)] }))}
+        ${this.fg('目标职位数', this.numInput('targetCount', cfg.targetCount ?? 20, '条', SAFETY.targetCount.min, { max: SAFETY.targetCount.max, step: 5, scale: [String(SAFETY.targetCount.min), String(SAFETY.targetCount.max)] }))}
+        <div class="bh-fg-help" style="margin-top:-4px;">点「多找一些」会持续加载，直到凑满目标职位数或列表到底。</div>`
 
       // 打招呼语：BOSS 列表页的「立即沟通」只发账号里预设的招呼，
       // 所以这里让用户自定义内容，投递时逐条替换、投完自动恢复。
@@ -1169,6 +1402,22 @@ export class Panel {
           <div class="bh-fg-help">可用变量：<b>{{jobName}}</b> 职位名、<b>{{company}}</b> 公司名、<b>{{bossName}}</b> HR 称呼、<b>{{salary}}</b> 薪资。<br>整批投递开始前会按<b>第一条职位</b>渲染一次并写入账号，投完自动恢复原招呼语；受 BOSS 限制无法逐条替换。</div>
         </div>`
 
+      // 高级设置：节奏 / 上限 / 招呼语都属于"机器参数"，有可用默认值，
+      // 收进一个默认折叠的容器里，默认路径上一个数字输入都不出现。
+      const advBody =
+        `<div class="bh-adv-lead">下面都已有合理默认值，一般不用改。间隔调得越小越快，但越容易被 BOSS 限制——低于安全下限会被自动拦回。</div>
+        <div class="bh-adv-toolbar">
+          <button type="button" class="bh-adv-btn" id="bh-adv-save-default" title="把当前节奏/上限存为以后「恢复默认」用的值">保存为默认</button>
+          <button type="button" class="bh-adv-btn ghost" id="bh-adv-reset-default" title="恢复到你保存的默认值；没保存过则用推荐值">恢复默认</button>
+          <span class="bh-adv-note" id="bh-adv-note"></span>
+        </div>
+        <div class="bh-adv-sub">投递节奏</div>
+        ${schedBody}
+        <div class="bh-adv-sub">上限与目标</div>
+        ${limitBody}
+        <div class="bh-adv-sub">打招呼语</div>
+        ${greetBody}`
+
       this.settingsEl.innerHTML =
         this.section('presets', '预设方案', this.presetsBody(), this.presets.length ? `${this.presets.length} 套` : undefined) +
         this.section('keywords', '关键词', kwBody, kwOn ? `${kwOn} 组生效` : undefined) +
@@ -1176,12 +1425,11 @@ export class Panel {
         this.section('exp', '经验与身份', expBody, expOn ? `${expOn} 项生效` : undefined) +
         this.section('boss', 'Boss 状态', bossBody, bossOn ? `${bossOn} 项生效` : undefined) +
         this.section('other', '其他过滤', otherBody, otherOn ? `${otherOn} 项生效` : undefined) +
-        this.section('greet', '打招呼语', greetBody, cfg.autoGreet && cfg.greetTemplate ? '已启用' : undefined) +
-        this.section('sched', '投递节奏', schedBody) +
-        this.section('limit', '上限与目标', limitBody)
+        this.section('advanced', '高级设置', advBody, undefined, 'bh-sec-adv')
 
       this.wireSettings()
       this.wirePresets()
+      this.setDirty(false)
     } catch (e) {
       console.error('[BossHunter] 设置渲染失败', e)
       this.settingsEl.innerHTML = `<div class="bh-note" style="margin:12px;color:var(--bh-danger);">设置渲染出错：${esc((e as Error).message)}</div>`
@@ -1217,6 +1465,21 @@ export class Panel {
 
   /** 预设相关交互 */
   private wirePresets() {
+    // 高级设置：把当前节奏/上限「保存为默认」，或「恢复默认」
+    this.settingsEl.querySelector<HTMLElement>('#bh-adv-save-default')?.addEventListener('click', () => {
+      const vals = this.readAdvancedValues()
+      this.handlers.onSaveAdvancedDefaults(vals)
+      this.advNote('已保存为默认', true)
+      this.log('已把当前节奏与上限保存为默认值', 'ok')
+    })
+    this.settingsEl.querySelector<HTMLElement>('#bh-adv-reset-default')?.addEventListener('click', () => {
+      const d = this.handlers.getAdvancedDefaults()
+      this.applyAdvancedValues(d)
+      this.setDirty(true)
+      this.advNote('已恢复默认', true)
+      this.log('已恢复默认的高级设置（点「保存并筛选」生效）', 'info')
+    })
+
     this.settingsEl.querySelectorAll<HTMLElement>('[data-preset-apply]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.presetApply!
@@ -1291,17 +1554,102 @@ export class Panel {
     const el = this.settingsEl.querySelector<HTMLInputElement>(`[data-k="${k}"]`)
     return Number(el?.value ?? 0)
   }
-  /** 数字框只接受数字：输入时过滤掉非数字字符 */
+
+  /** 读取「高级设置」当前值（节奏/上限），用于「保存为默认」 */
+  private readAdvancedValues(): AdvancedDefaults {
+    return {
+      roundSize: this.num('roundSize'),
+      loadPages: this.num('loadPages'),
+      roundInterval: this.num('roundInterval-fixed') * 1000,
+      itemInterval: this.num('itemInterval-fixed') * 1000,
+      deliveryLimit: this.num('deliveryLimit'),
+      targetCount: this.num('targetCount'),
+    }
+  }
+
+  /** 把一组默认值回填到表单控件（数字框 + 滑块 + 填充色） */
+  private applyAdvancedValues(d: AdvancedDefaults) {
+    const set = (k: string, v: number) => {
+      const el = this.settingsEl.querySelector<HTMLInputElement>(`[data-k="${k}"]`)
+      if (el) el.value = String(v)
+      const range = this.settingsEl.querySelector<HTMLInputElement>(`.bh-range[data-range="${k}"]`)
+      if (range) {
+        range.value = String(v)
+        const min = Number(range.min)
+        const max = Number(range.max)
+        const pct = max > min ? Math.round(((v - min) / (max - min)) * 100) : 0
+        range.style.setProperty('--bh-fill', `${pct}%`)
+      }
+    }
+    set('roundSize', d.roundSize)
+    set('loadPages', d.loadPages)
+    set('roundInterval-fixed', Math.round(d.roundInterval / 1000))
+    set('itemInterval-fixed', Math.round(d.itemInterval / 1000))
+    set('deliveryLimit', d.deliveryLimit)
+    set('targetCount', d.targetCount)
+  }
+
+  /** 高级设置操作条右侧的短提示（保存/恢复后的即时反馈） */
+  private advNote(text: string, ok = false) {
+    const el = this.settingsEl.querySelector<HTMLElement>('#bh-adv-note')
+    if (!el) return
+    el.textContent = text
+    el.classList.toggle('ok', ok)
+    window.setTimeout(() => {
+      if (el.textContent === text) {
+        el.textContent = ''
+        el.classList.remove('ok')
+      }
+    }, 1800)
+  }
+
+  /** 数值控件：数字框与滑块双向同步；数字框只接受数字 */
   private wireNumericInputs() {
+    const fillOf = (range: HTMLInputElement) => {
+      const min = Number(range.min)
+      const max = Number(range.max)
+      const v = Number(range.value)
+      const pct = max > min ? Math.round(((v - min) / (max - min)) * 100) : 0
+      range.style.setProperty('--bh-fill', `${pct}%`)
+    }
+    // 滑块 → 数字框
+    for (const range of Array.from(this.settingsEl.querySelectorAll<HTMLInputElement>('.bh-range'))) {
+      const k = range.dataset.range!
+      const text = this.settingsEl.querySelector<HTMLInputElement>(`.bh-num input[data-k="${k}"]`)
+      fillOf(range)
+      range.addEventListener('input', () => {
+        if (text) text.value = range.value
+        fillOf(range)
+        this.setDirty(true)
+      })
+    }
+    // 数字框 → 滑块（并把值夹在量程内）
     for (const el of Array.from(this.settingsEl.querySelectorAll<HTMLInputElement>('.bh-num input'))) {
+      const range = this.settingsEl.querySelector<HTMLInputElement>(`.bh-range[data-range="${el.dataset.k}"]`)
       el.addEventListener('input', () => {
         const cleaned = el.value.replace(/[^\d]/g, '')
         if (cleaned !== el.value) el.value = cleaned
+        const v = Number(cleaned || 0)
+        if (range && cleaned !== '') {
+          range.value = String(v)
+          fillOf(range)
+        }
       })
       el.addEventListener('blur', () => {
         const min = Number(el.dataset.min ?? 0)
-        const v = Number(el.value || 0)
-        if (!Number.isFinite(v) || v < min) el.value = String(min)
+        const max = Number(el.dataset.max ?? Number.MAX_SAFE_INTEGER)
+        const step = Number(el.dataset.step ?? 1) || 1
+        let v = Number(el.value || 0)
+        if (!Number.isFinite(v)) v = min
+        v = Math.max(min, Math.min(max, v))
+        // 与滑块 step 对齐，避免数字框留在 77、滑块却吸附到 75 的不一致
+        if (step > 1) v = Math.round((v - min) / step) * step + min
+        v = Math.max(min, Math.min(max, v))
+        el.value = String(v)
+        if (range) {
+          range.value = String(v)
+          fillOf(range)
+        }
       })
     }
   }
@@ -1315,18 +1663,21 @@ export class Panel {
   /** 把当前表单内容读进一份配置副本（保存 / 存为预设都走这里，保证口径一致） */
   private readFormIntoConfig(): AppConfig {
     const cfg: AppConfig = JSON.parse(JSON.stringify(this.handlers.getConfig()))
-    cfg.deliveryLimit = this.num('deliveryLimit') || 120
-    cfg.targetCount = this.num('targetCount') || 20
+    const clamp = (n: number, b: { min: number; max: number }) =>
+      Number.isFinite(n) ? Math.max(b.min, Math.min(b.max, n)) : b.min
+    cfg.deliveryLimit = clamp(this.num('deliveryLimit') || SAFETY.deliveryLimit.min, SAFETY.deliveryLimit)
+    cfg.targetCount = clamp(this.num('targetCount') || SAFETY.targetCount.min, SAFETY.targetCount)
 
     const f = cfg.filters
-    cfg.schedule.roundSize = this.num('roundSize') || 5
-    cfg.schedule.loadPages = this.num('loadPages') || 0
+    cfg.schedule.roundSize = clamp(this.num('roundSize') || SAFETY.roundSize.min, SAFETY.roundSize)
+    cfg.schedule.loadPages = clamp(this.num('loadPages'), SAFETY.loadPages)
 
     const readInterval = (k: 'roundInterval' | 'itemInterval') => {
       const iv = cfg.schedule[k]
-      const cur = iv.fixed / 1000 || 30
+      const bound = k === 'roundInterval' ? SAFETY.roundIntervalSec : SAFETY.itemIntervalSec
+      const cur = iv.fixed / 1000 || bound.min
+      const sec = (x: number) => clamp(x > 0 ? x : cur, bound)
       iv.mode = (this.str(`${k}-mode`) as TimeInterval['mode']) || 'fixed'
-      const sec = (x: number) => (x > 0 ? x : cur)
       iv.fixed = sec(this.num(`${k}-fixed`)) * 1000
       iv.min = sec(this.num(`${k}-min`)) * 1000
       iv.max = sec(this.num(`${k}-max`)) * 1000
@@ -1373,6 +1724,16 @@ export class Panel {
     const setVal = (k: string, v: string) => {
       const el = this.settingsEl.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[data-k="${k}"]`)
       if (el) el.value = v
+      // 数值控件还要同步滑块位置与填充
+      const range = this.settingsEl.querySelector<HTMLInputElement>(`.bh-range[data-range="${k}"]`)
+      if (range) {
+        range.value = v
+        const min = Number(range.min)
+        const max = Number(range.max)
+        const val = Number(v)
+        const pct = max > min ? Math.round(((val - min) / (max - min)) * 100) : 0
+        range.style.setProperty('--bh-fill', `${pct}%`)
+      }
     }
     const setCheck = (k: string, v: boolean) => {
       const el = this.settingsEl.querySelector<HTMLInputElement>(`[data-k="${k}"]`)
@@ -1425,6 +1786,8 @@ export class Panel {
 
     // 让「随机区间」的最小/最大行按方式显示
     this.wireSettings()
+    // 预设回填后尚未保存 → 标记为有未保存改动，提示用户还需点「保存并筛选」
+    this.setDirty(true)
   }
 
   private async saveFromForm() {
@@ -1432,6 +1795,7 @@ export class Panel {
     try {
       const cfg = this.readFormIntoConfig()
       await this.handlers.onSave(cfg)
+      this.setDirty(false)
       if (this.pendingPreset) {
         this.log(`已按预设「${this.pendingPreset.name}」应用筛选`, 'ok')
         this.pendingPreset = null

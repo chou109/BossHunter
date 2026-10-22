@@ -1,5 +1,6 @@
 import { DEFAULT_CONFIG, STORAGE_KEY } from './types'
 import type { AppConfig } from './types'
+import { SAFETY, clampTo } from './safety'
 
 /** 读取并合并配置（缺失字段回退到默认值，并纠正旧版本的类型） */
 export async function loadConfig(): Promise<AppConfig> {
@@ -55,27 +56,61 @@ export function normalizeConfig(input: AppConfig): AppConfig {
   }
 
   const sched = cfg.schedule && typeof cfg.schedule === 'object' ? cfg.schedule : {}
-  const interval = (iv: any, fixed: number, min: number, max: number) => ({
-    mode: iv?.mode === 'range' ? ('range' as const) : ('fixed' as const),
-    fixed: toNum(iv?.fixed, fixed),
-    min: toNum(iv?.min, min),
-    max: toNum(iv?.max, max),
-  })
+  // 间隔的米/秒换算：安全下限用「秒」，这里统一乘以 1000 落到毫秒
+  const interval = (iv: any, fixed: number, min: number, max: number, bound: { min: number; max: number }) => {
+    const lo = bound.min * 1000
+    const hi = bound.max * 1000
+    const cl = (v: number) => Math.max(lo, Math.min(hi, Math.round(v)))
+    return {
+      mode: iv?.mode === 'range' ? ('range' as const) : ('fixed' as const),
+      fixed: cl(toNum(iv?.fixed, fixed)),
+      min: cl(toNum(iv?.min, min)),
+      max: cl(toNum(iv?.max, max)),
+    }
+  }
   cfg.schedule = {
-    roundSize: Math.max(1, toNum(sched.roundSize, DEFAULT_CONFIG.schedule.roundSize)),
-    roundInterval: interval(sched.roundInterval, 60000, 30000, 120000),
-    itemInterval: interval(sched.itemInterval, 5000, 3000, 12000),
-    loadPages: Math.max(0, toNum(sched.loadPages, DEFAULT_CONFIG.schedule.loadPages)),
+    roundSize: clampTo(toNum(sched.roundSize, DEFAULT_CONFIG.schedule.roundSize), SAFETY.roundSize),
+    roundInterval: interval(
+      sched.roundInterval,
+      DEFAULT_CONFIG.schedule.roundInterval.fixed,
+      DEFAULT_CONFIG.schedule.roundInterval.min,
+      DEFAULT_CONFIG.schedule.roundInterval.max,
+      SAFETY.roundIntervalSec,
+    ),
+    itemInterval: interval(
+      sched.itemInterval,
+      DEFAULT_CONFIG.schedule.itemInterval.fixed,
+      DEFAULT_CONFIG.schedule.itemInterval.min,
+      DEFAULT_CONFIG.schedule.itemInterval.max,
+      SAFETY.itemIntervalSec,
+    ),
+    loadPages: clampTo(toNum(sched.loadPages, DEFAULT_CONFIG.schedule.loadPages), SAFETY.loadPages),
   }
 
   cfg.excluded = toStringArray(cfg.excluded)
-  cfg.deliveryLimit = Math.max(1, toNum(cfg.deliveryLimit, DEFAULT_CONFIG.deliveryLimit))
-  cfg.targetCount = Math.max(1, toNum(cfg.targetCount, DEFAULT_CONFIG.targetCount))
+  cfg.deliveryLimit = clampTo(toNum(cfg.deliveryLimit, DEFAULT_CONFIG.deliveryLimit), SAFETY.deliveryLimit)
+  cfg.targetCount = clampTo(toNum(cfg.targetCount, DEFAULT_CONFIG.targetCount), SAFETY.targetCount)
   cfg.warmBossActive = !!cfg.warmBossActive
   cfg.enabled = cfg.enabled !== false
   cfg.batchApply = cfg.batchApply !== false
   cfg.autoGreet = cfg.autoGreet !== false
   cfg.greetTemplate = typeof cfg.greetTemplate === 'string' ? cfg.greetTemplate : DEFAULT_CONFIG.greetTemplate
+
+  // advancedDefaults：可选的用户自定义默认值，做基本校验与夹取
+  const ad = cfg.advancedDefaults
+  if (ad && typeof ad === 'object') {
+    const secToMs = (sec: number, b: { min: number; max: number }) => clampTo(toNum(sec, b.min), b) * 1000
+    cfg.advancedDefaults = {
+      roundSize: clampTo(toNum(ad.roundSize, 5), SAFETY.roundSize),
+      loadPages: clampTo(toNum(ad.loadPages, 3), SAFETY.loadPages),
+      roundInterval: secToMs(toNum(ad.roundInterval, 60000) / 1000, SAFETY.roundIntervalSec),
+      itemInterval: secToMs(toNum(ad.itemInterval, 5000) / 1000, SAFETY.itemIntervalSec),
+      deliveryLimit: clampTo(toNum(ad.deliveryLimit, 120), SAFETY.deliveryLimit),
+      targetCount: clampTo(toNum(ad.targetCount, 20), SAFETY.targetCount),
+    }
+  } else {
+    cfg.advancedDefaults = null
+  }
   return cfg as AppConfig
 }
 

@@ -134,29 +134,53 @@ await new Promise((r) => setTimeout(r, 800))
 check('设置页可渲染', (await ev(`document.getElementById('bh-settings').children.length`)) > 0)
 await shotPanel('05-settings.png')
 
+// 高级设置展开态（含滑块 + 保存为默认/恢复默认工具条）
+await ev(`document.querySelector('.bh-sec[data-sec="advanced"] .bh-sec-sum').click()`)
+await new Promise((r) => setTimeout(r, 500))
+check('高级设置有滑块', (await ev(`document.querySelectorAll('.bh-sec[data-sec="advanced"] .bh-range').length`)) > 0)
+check('高级设置有「保存为默认」', (await ev(`!!document.getElementById('bh-adv-save-default')`)) === true)
+check('间隔滑块受安全下限约束(≥3s)', (await ev(`Number(document.querySelector('.bh-range[data-range="itemInterval-fixed"]').min)`)) >= 3)
+await ev(`document.querySelector('.bh-sec[data-sec="advanced"]').scrollIntoView({ block: 'start' })`)
+await new Promise((r) => setTimeout(r, 300))
+await shotPanel('15-advanced.png')
+
+// 确认层（投递闸门）
+await ev(`window.__BH_HARNESS__.tab('preview')`)
+await new Promise((r) => setTimeout(r, 500))
+await ev(`window.__BH_HARNESS__.openConfirm()`)
+await new Promise((r) => setTimeout(r, 500))
+check('确认层可打开', (await ev(`document.getElementById('bh-confirm').classList.contains('show')`)) === true)
+check('确认层焦点在安全项', (await ev(`document.activeElement.id`)) === 'bh-confirm-back')
+await shotPanel('14-confirm.png')
+await ev(`document.getElementById('bh-confirm-back').click()`)
+await new Promise((r) => setTimeout(r, 350))
+
 await ev(`window.__BH_HARNESS__.tab('log')`)
 await new Promise((r) => setTimeout(r, 400))
 await shotPanel('06-log.png')
 
-// ---------- 2. 工作台收起动效 ----------
-console.log('\n=== 2. 设置页工作台收起 ===')
+// ---------- 2. 切到设置页：工作台带动画收起，面板高度平滑过渡 ----------
+console.log('\n=== 2. 设置页切换（工作台收起有动画）===')
 await ev(`window.__BH_HARNESS__.tab('preview')`)
 await new Promise((r) => setTimeout(r, 500))
 const before = Number(await ev(`Math.round(document.querySelector('.bh-work').getBoundingClientRect().height)`))
 await ev(`window.__BH_HARNESS__.tab('settings')`)
+// 采样「工作台自身高度」：必须逐帧收缩（多种中间值），不能一帧消失
 const frames = []
-for (let i = 0; i < 8; i++) {
+for (let i = 0; i < 14; i++) {
   frames.push(Number(await ev(`Math.round(document.querySelector('.bh-work').getBoundingClientRect().height)`)))
-  await new Promise((r) => setTimeout(r, 40))
+  await new Promise((r) => setTimeout(r, 30))
 }
 await new Promise((r) => setTimeout(r, 500))
 const after = Number(await ev(`Math.round(document.querySelector('.bh-work').getBoundingClientRect().height)`))
 check('工作台收起为 0', after === 0, `${before} → ${after}`)
-check('收起过程有过渡', new Set(frames).size >= 3, frames.join(' → '))
+check('工作台收起有中间帧（不是一帧）', new Set(frames).size >= 3, frames.join(' → '))
 check('设置区拿到高度', Number(await ev(`Math.round(document.getElementById('bh-settings').getBoundingClientRect().height)`)) > 400)
 
-// ---------- 3. 组件不被压扁 ----------
+// ---------- 3. 组件不被压扁（在预览页量：工作台只在预览页可见） ----------
 console.log('\n=== 3. 组件尺寸（不允许被压缩）===')
+await ev(`window.__BH_HARNESS__.tab('preview')`)
+await new Promise((r) => setTimeout(r, 520))
 const sizes = JSON.parse(await ev(`JSON.stringify((() => {
   const p = document.getElementById('bh-panel')
   const R = (s) => { const e = p.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : -1 }

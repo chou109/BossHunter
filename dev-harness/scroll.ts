@@ -45,6 +45,7 @@ const JOBS = Array.from({ length: 18 }, (_, i) => job(i))
 const panel = new Panel({
   onRefresh: async () => {},
   onRun: async () => {},
+  onConfirmSend: async () => {},
   onStop: () => {},
   onPause: () => {},
   onDebug: () => {},
@@ -58,6 +59,8 @@ const panel = new Panel({
   onRetry: () => {},
   onLocateJob: () => {},
   onSave: async () => {},
+  onSaveAdvancedDefaults: () => {},
+  getAdvancedDefaults: () => ({ roundSize: 5, loadPages: 3, roundInterval: 60000, itemInterval: 5000, deliveryLimit: 120, targetCount: 20 }),
 })
 
 panel.setStats(18, 18, true)
