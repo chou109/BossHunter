@@ -129,7 +129,8 @@ check('关键词=只留命中', form.jobTitleInclude === '1', form.jobTitleInclu
 check('日薪 200 起', form.daySalary === 'day-200-0', form.daySalary)
 check('月薪 4K 起', form.monthlySalary === 'month-4-0', form.monthlySalary)
 check('Boss 活跃=3日内', form.bossActive === 'last3days', form.bossActive)
-check('仅实习=开', form.onlyIntern === true)
+// 内置预设默认**不开**「仅实习」（presets.ts 里有注释：开了会把页面筛空），这里改为断言其为关
+check('仅实习=关（预设默认不开）', form.onlyIntern === false, String(form.onlyIntern))
 check('剔已沟通=开', form.friendStatus === true)
 check('剔面议=开', form.excludeNegotiable === true)
 check('每轮 20', form.roundSize === '20', form.roundSize)

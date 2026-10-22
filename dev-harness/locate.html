@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>定位到列表卡片测试</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #eef1f5; }
+  #cards { padding: 20px; width: 640px; }
+  /* 每张卡先占 90px，40 张足够让页面滚动 */
+  .job-card-wrap { margin-bottom: 10px; }
+  .job-card-box {
+    background: #fff; border: 1px solid #e8ecf1; border-radius: 8px;
+    padding: 22px 14px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .job-card-box .job-name { font-size: 14px; font-weight: 600; }
+  .job-card-box .salary { color: #f05a28; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="cards"></div>
+<script type="module" src="./locate.ts"></script>
+</body>
+</html>

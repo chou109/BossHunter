@@ -55,6 +55,7 @@ const panel = new Panel({
   getExcluded: () => new Set(),
   toggleExclude: () => {},
   onRetry: () => {},
+  onLocateJob: () => {},
   onSave: async () => {},
 })
 

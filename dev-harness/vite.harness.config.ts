@@ -20,6 +20,8 @@ export default defineConfig({
         scroll: path.join(H, 'scroll.html'),
         fixedbar: path.join(H, 'fixedbar.html'),
         topbars: path.join(H, 'topbars.html'),
+        locate: path.join(H, 'locate.html'),
+        pager: path.join(H, 'pager.html'),
       },
     },
   },

@@ -397,6 +397,14 @@ export const PANEL_CSS = `
 }
 #bh-panel .bh-row:hover { background: var(--bh-surface-2); border-color: var(--bh-line); }
 #bh-panel .bh-row.is-excluded { opacity: .48; }
+/* 可点击定位到列表的行：给出指针与键盘焦点反馈 */
+#bh-panel .bh-row-open { cursor: pointer; }
+#bh-panel .bh-row-open:focus-visible {
+  outline: 2px solid var(--bh-brand); outline-offset: 1px;
+  background: var(--bh-surface-2); border-color: var(--bh-line);
+}
+#bh-panel .bh-row-open .bh-row-name { transition: color .12s ease; }
+#bh-panel .bh-row-open:hover .bh-row-name { color: var(--bh-brand); }
 #bh-panel .bh-row-main { flex: 1; min-width: 0; }
 #bh-panel .bh-row-name {
   display: block; font-size: 12.5px; font-weight: 600; color: var(--bh-ink);
@@ -466,6 +474,9 @@ export const PANEL_CSS = `
   font-size: 11px; font-weight: 600; cursor: pointer;
 }
 #bh-panel .bh-logbar button:hover { background: var(--bh-surface-2); }
+#bh-panel .bh-logbar-actions { display: flex; gap: 6px; }
+#bh-panel #bh-log-copy.copied { color: var(--bh-brand); border-color: #cdebdd; background: var(--bh-brand-soft); }
+#bh-panel #bh-log-copy.fail { color: var(--bh-danger); border-color: #f0c8c8; background: var(--bh-danger-soft); }
 
 /* ---------- 设置 ---------- */
 /* 注：.bh-work 的定位与层叠已在上面统一声明，此处不再重复 */
@@ -824,5 +835,28 @@ body.bh-page-offset {
   #bh-panel *, #bh-panel *::before, #bh-panel *::after,
   #bh-trigger, #bh-trigger * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
   body.bh-page-offset { transition: none; }
+}
+`
+
+/**
+ * 预览里点某条 → 定位到列表里的卡片时的高亮脉冲。
+ *
+ * 这个类加在宿主的职位卡片上（在 #bh-panel 之外），所以不能用 `#bh-panel .xxx` 前缀，
+ * 单独作为一段全局样式导出，由 panel 模板里的 `<style>` 一起注入。
+ */
+export const LOCATE_CSS = `
+@keyframes bhLocatePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(14,159,110,.85), 0 0 0 1px rgba(14,159,110,.95); background: rgba(232,247,240,.55); }
+  55%  { box-shadow: 0 0 0 9px rgba(14,159,110,0),  0 0 0 2px rgba(14,159,110,.95); background: rgba(232,247,240,.35); }
+  100% { box-shadow: 0 0 0 0 rgba(14,159,110,0),   0 0 0 0 rgba(14,159,110,0);    background: transparent; }
+}
+.bh-locate-pulse {
+  position: relative;
+  z-index: 5;
+  border-radius: 10px;
+  animation: bhLocatePulse 1.7s ease-out 1 both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bh-locate-pulse { animation: none; box-shadow: 0 0 0 2px rgba(14,159,110,.95); }
 }
 `

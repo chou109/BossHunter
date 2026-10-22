@@ -34,7 +34,7 @@ const panel = new Panel({
   onRefresh: async () => {}, onRun: async () => {}, onStop: () => {}, onPause: () => {},
   onDebug: () => {}, onShowAll: () => {}, onLoadMore: async () => {},
   getConfig: () => cfg, getMatched: () => JOBS, getRetry: () => [], getExcluded: () => new Set(),
-  toggleExclude: () => {}, onRetry: () => {}, onSave: async () => {},
+  toggleExclude: () => {}, onRetry: () => {}, onLocateJob: () => {}, onSave: async () => {},
 })
 
 panel.setStats(JOBS.length, JOBS.length, true)

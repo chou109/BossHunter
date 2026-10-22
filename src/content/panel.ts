@@ -4,7 +4,7 @@ import { addPreset, loadPresets, removePreset } from '../lib/preset-store'
 import type { FilterPreset } from '../lib/presets'
 import { describePreset, extractPresetData } from '../lib/presets'
 import { ICON, LOGO_MARK } from './ui/icons'
-import { PANEL_CSS } from './ui/styles'
+import { PANEL_CSS, LOCATE_CSS } from './ui/styles'
 
 type LogLevel = 'info' | 'ok' | 'warn'
 export type TabName = 'preview' | 'log' | 'settings'
@@ -23,6 +23,8 @@ export interface PanelHandlers {
   getExcluded: () => Set<string>
   toggleExclude: (key: string) => void
   onRetry: (key: string) => void
+  /** 点击预览里的一条 → 滚动页面到该职位在列表中的位置（并高亮） */
+  onLocateJob: (key: string) => void
   onSave: (cfg: AppConfig) => Promise<void>
 }
 
@@ -194,7 +196,7 @@ export class Panel {
 
   private template() {
     return `
-      <style>${PANEL_CSS}</style>
+      <style>${PANEL_CSS}${LOCATE_CSS}</style>
       <div class="bh-head">
         <span class="bh-mark">${LOGO_MARK}</span>
         <span class="bh-title">
@@ -277,7 +279,10 @@ export class Panel {
           <div class="bh-log" id="bh-log"></div>
           <div class="bh-logbar">
             <span id="bh-log-count">0 条记录</span>
-            <button id="bh-log-clear">清空</button>
+            <div class="bh-logbar-actions">
+              <button id="bh-log-copy" title="复制全部日志">复制</button>
+              <button id="bh-log-clear">清空</button>
+            </div>
           </div>
         </div>
         <div class="bh-pane" data-pane="settings">
@@ -316,6 +321,7 @@ export class Panel {
       this.logEl.innerHTML = ''
       this.updateLogCount()
     })
+    on('#bh-log-copy', () => void this.copyLogs())
     on('#bh-cancel', () => this.switchTab('preview'))
     on('#bh-save', () => void this.saveFromForm())
 
@@ -336,7 +342,7 @@ export class Panel {
       })
     }
 
-    // 预览区「重试 / 排除」事件委托
+    // 预览区「重试 / 排除 / 定位到列表」事件委托
     this.previewEl.addEventListener('click', (e) => {
       const t = e.target as HTMLElement
       const retry = t.closest<HTMLElement>('.bh-retry')
@@ -348,7 +354,23 @@ export class Panel {
       if (ex) {
         this.handlers.toggleExclude(ex.dataset.key ?? '')
         this.renderPreview()
+        return
       }
+      // 点整行（但不能是行内按钮）→ 把列表滚动到该职位
+      const row = t.closest<HTMLElement>('.bh-row-open')
+      if (row && !t.closest('button')) {
+        this.handlers.onLocateJob(row.dataset.key ?? '')
+      }
+    })
+    // 键盘可达：聚焦到行上按 Enter / 空格也能定位
+    this.previewEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      const t = e.target as HTMLElement
+      if (t.closest('button')) return
+      const row = t.closest<HTMLElement>('.bh-row-open')
+      if (!row) return
+      e.preventDefault()
+      this.handlers.onLocateJob(row.dataset.key ?? '')
     })
 
     // 设置区展开状态记忆 + 面板高度补间
@@ -509,6 +531,54 @@ export class Panel {
   private updateLogCount() {
     const n = this.logEl.childElementCount
     this.logCountEl.textContent = n ? `${n} 条记录` : '暂无记录'
+  }
+
+  /** 把「日志」页签里的全部记录按 "时间  内容" 复制到剪贴板（方便贴给我排查） */
+  async copyLogs() {
+    const lines = Array.from(this.logEl.querySelectorAll<HTMLElement>('.bh-log-line')).map((el) => {
+      const time = el.querySelector('.bh-log-time')?.textContent ?? ''
+      const msg = el.querySelector('.bh-log-msg')?.textContent ?? ''
+      return `${time}  ${msg}`.trim()
+    })
+    if (!lines.length) {
+      this.log('当前没有日志可复制', 'info')
+      return
+    }
+    const text = lines.join('\n')
+    const ok = await this.copyText(text)
+    const btn = this.root.querySelector<HTMLButtonElement>('#bh-log-copy')
+    if (btn) {
+      const prev = btn.textContent
+      btn.textContent = ok ? '已复制 ✓' : '复制失败'
+      btn.classList.add(ok ? 'copied' : 'fail')
+      setTimeout(() => {
+        btn.textContent = prev || '复制'
+        btn.classList.remove('copied', 'fail')
+      }, 1500)
+    }
+    if (!ok) this.log('复制失败，请手动选中日志复制', 'warn')
+  }
+
+  /** 复制文本：优先 clipboard API，失败回退 execCommand（content script 在部分场景下无剪贴板权限） */
+  private async copyText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;'
+        document.body.appendChild(ta)
+        ta.focus()
+        ta.select()
+        const ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+        return ok
+      } catch {
+        return false
+      }
+    }
   }
 
   // ---------------------------------------------------------------- 渲染
@@ -870,7 +940,7 @@ export class Panel {
         <div class="bh-list">`
       for (const r of retries) {
         const name = r.job.jobName || '未知职位'
-        html += `<div class="bh-row">
+        html += `<div class="bh-row bh-row-open" data-key="${esc(r.job.key)}" role="button" tabindex="0" title="点击定位到列表中的这个职位">
           <div class="bh-row-main">
             <span class="bh-row-name" title="${esc(name)}">${esc(name)}</span>
             <span class="bh-row-sub"><span title="${esc(r.reason)}">${esc(r.reason || '未知原因')}</span></span>
@@ -891,7 +961,7 @@ export class Panel {
       const salary = j.salaryDesc || '薪资未知'
       const isEx = excluded.has(j.key)
       const sub = [j.company, j.address, j.activeText].filter(Boolean).join(' · ')
-      html += `<div class="bh-row${isEx ? ' is-excluded' : ''}">
+      html += `<div class="bh-row bh-row-open${isEx ? ' is-excluded' : ''}" data-key="${esc(j.key)}" role="button" tabindex="0" title="点击定位到列表中的这个职位">
         <div class="bh-row-main">
           <span class="bh-row-name" title="${esc(name)}">${esc(name)}</span>
           <span class="bh-row-sub"><span title="${esc(sub)}">${esc(sub || '—')}</span></span>

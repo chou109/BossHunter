@@ -13,7 +13,14 @@
     "preview": "vite preview",
     "verify": "node scripts/verify-panel.mjs",
     "test:presets": "node scripts/test-presets.mjs",
-    "test:apply": "node scripts/test-apply-flow.mjs"
+    "test:apply": "node scripts/test-apply-flow.mjs",
+    "test:locate": "node scripts/test-locate-job.mjs",
+    "test:pager": "node scripts/test-api-pager.mjs",
+    "test:pager:e2e": "node scripts/test-api-pager-e2e.mjs",
+    "test:copy": "node scripts/test-copy-logs.mjs",
+    "test:scroll": "node scripts/test-scroll-list.mjs",
+    "probe:boss": "node scripts/probe-boss-api.mjs",
+    "capture:boss": "node scripts/capture-boss-jobs.mjs"
   },
   "dependencies": {},
   "devDependencies": {

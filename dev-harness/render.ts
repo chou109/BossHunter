@@ -82,6 +82,9 @@ const panel = new Panel({
   getExcluded: () => new Set([JOBS[4].key]),
   toggleExclude: () => {},
   onRetry: () => {},
+  onLocateJob: (key: string) => {
+    ;(window as any).__BH_LAST_LOCATE__ = key
+  },
   onSave: async () => {},
 })
 

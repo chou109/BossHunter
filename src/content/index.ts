@@ -8,6 +8,9 @@ import { decodeSalaryText, hasSalaryDigits } from '../lib/range'
 import { isProgressStale, loadProgress, saveProgress } from '../lib/progress'
 import type { GreetingState } from '../lib/greeting'
 import { Panel } from './panel'
+import { locateJobInList } from './locate'
+import { fetchPages, toPageData, buildSearchUrl, shouldFallbackToRecommend, mergeFallbackResult } from './apiPager'
+import { scrollDownUntilNew } from './scrollList'
 
 /**
  * 数据来源：
@@ -70,6 +73,11 @@ const capturedNet: { url: string; data: any }[] = []
 let apiJobList: any[] = []
 /** 上一次自动补足"到底"时页面上的卡片数；用来避免站点没变化时反复滚动空转 */
 let fillExhaustedAt = 0
+/**
+ * 接口翻页已经"判定到底"且失败：置真，此后本轮不再自动翻页（避免每次列表变动都反复重拉）。
+ * 任何会让结果集变化（应用筛选 / 手动刷新 / 查看更过）时复位为 false。
+ */
+let pagerExhausted = false
 window.addEventListener('message', (e) => {
   if (e.data?.type === 'bh-net') {
     capturedNet.push(e.data)
@@ -87,13 +95,11 @@ window.addEventListener('message', (e) => {
         if (!apiJobList.length) {
           apiJobList = jobs
         } else {
-          const exists = new Set(apiJobList.map((j) => j.encryptJobId))
-          apiJobList = apiJobList.concat(jobs.filter((j) => j.encryptJobId && !exists.has(j.encryptJobId)))
+          addJobsToPool(jobs)
         }
       } else {
         // 加载更多：去重追加
-        const exists = new Set(apiJobList.map((j) => j.encryptJobId))
-        apiJobList = apiJobList.concat(jobs.filter((j) => j.encryptJobId && !exists.has(j.encryptJobId)))
+        addJobsToPool(jobs)
       }
       // 职位池也设个上限：正常只需要目标数量 + 若干页余量。
       // 无上限翻页在长时间挂机时会把几千个职位全塞在内存里，过滤和统计都会变慢。
@@ -103,6 +109,36 @@ window.addEventListener('message', (e) => {
     }
   }
 })
+
+/**
+ * 把职位合并进接口池（**唯一入口**）。
+ *
+ * 所有往 apiJobList 加职位的地方都走这里，去重规则只有一份：
+ *   - 以 encryptJobId 为准（DOM 兜底来的职位也会补上 id 或合成 key）；
+ *   - 已存在的不重复加入。
+ * 以前各处各自 `new Set(apiJobList.map(...))` 重算一遍，容易漏算（比如 DOM 合并进来的
+ * 职位没进 existingIds，翻页时又会重复拉一次）。现在统一从这里进出。
+ *
+ * @returns 实际新增的条数
+ */
+function addJobsToPool(incoming: any[]): number {
+  if (!incoming?.length) return 0
+  const known = new Set(apiJobList.map((j) => String(j?.encryptJobId ?? '')).filter(Boolean))
+  const fresh: any[] = []
+  for (const j of incoming) {
+    const id = String(j?.encryptJobId ?? '')
+    if (!id || known.has(id)) continue
+    known.add(id)
+    fresh.push(j)
+  }
+  if (fresh.length) apiJobList = apiJobList.concat(fresh)
+  return fresh.length
+}
+
+/** 当前职位池里的全部 id（给翻页去重用；每次现算，保证包含 DOM 合并进来的职位） */
+function poolIds(): Set<string> {
+  return new Set(apiJobList.map((j) => String(j?.encryptJobId ?? '')).filter(Boolean))
+}
 
 /** 基础延时。注意：标签页转到后台后，Chrome 会把定时器合并到 ≥1s 粒度，
  *  所以 150ms 的等待实际会变成约 1s。需要"至少等够多久"的地方请用 sleepAtLeast。 */
@@ -314,8 +350,7 @@ function cardJobId(card: HTMLElement): string {
  *  只以 DOM 为准会把"已经抓到、但卡片暂时不在页面上"的职位全部丢掉。 */
 function mergeDomJobsIntoPool(): number {
   if (!apiJobList.length) return 0
-  const known = new Set(apiJobList.map((j) => String(j?.encryptJobId ?? '')).filter(Boolean))
-  const before = apiJobList.length
+  const fromCards: any[] = []
   for (const card of readCards()) {
     const id = cardJobId(card)
     const raw = DOMRaw(card)
@@ -323,11 +358,11 @@ function mergeDomJobsIntoPool(): number {
     // 没有职位名的卡片是占位骨架，不要污染池子
     if (!id && !name) continue
     const key = id || normText(`${name}-${raw.brandName ?? ''}-${raw.salaryDesc ?? ''}`)
-    if (!key || known.has(key)) continue
-    known.add(key)
-    apiJobList.push({ ...raw, encryptJobId: id || key })
+    if (!key) continue
+    fromCards.push({ ...raw, encryptJobId: id || key })
   }
-  return apiJobList.length - before
+  // 统一走 addJobsToPool 去重（同一张卡不会重复加入，也不会和接口池重复）
+  return addJobsToPool(fromCards)
 }
 
 /**
@@ -482,6 +517,11 @@ function activeFilterSummary(cfg: AppConfig): string[] {
  * 隐藏命中的可能是卡片自身，也可能是它的外层容器（某些版本是 `.job-card-wrap` / `.card-area`），
  * 如果「隐藏」和「还原」看的不是同一个节点，隐藏就会一直留在祖先上，
  * 列表高度被压没 → 没有可滚空间 → 「查看更多」判定"到底"，页面就只剩筛出来的几条。
+ *
+ * 注意：
+ *   - 这份集合只放"被 applyVisualFilter 隐藏的卡片块"，**不参与 find/定位逻辑**，职责单一；
+ *   - 它不会无限增长：applyVisualFilter / showAllCards 每轮都会先 restoreAllCards() 清空再重算，
+ *     所以生命周期只在一轮筛选之内（不存在"只增不减"的泄漏）。
  */
 const hiddenEls = new Set<HTMLElement>()
 
@@ -568,7 +608,8 @@ function watchList() {
     panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
     // 开了筛选时结果会被压少，滚出新卡片就顺手补回目标值。
     // 没开筛选时所有卡片都通过，不需要替用户自动滚动页面。
-    if (hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
+    // pagerExhausted：接口/滚动都已判定到底，别再每次卡片变动都重拉（否则日志会每 2 秒刷一遍填空转）。
+    if (!pagerExhausted && hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
       clearTimeout((watchList as any).__fill)
       ;(watchList as any).__fill = setTimeout(() => {
         // 上一轮补足已经"到底"过，且页面上卡片没变多，就别再滚一次（避免反复空转）
@@ -603,6 +644,7 @@ function watchList() {
  *  三个入口（刷新 / 保存并筛选 / 站点新增卡片）共用同一套收尾逻辑。 */
 async function autoFillToTarget(why: string): Promise<boolean> {
   if (!matchingAutoFillAllowed()) return false
+  if (pagerExhausted) return false
   const total = cfg.targetCount || 20
   if (matchedJobs.length >= total) return false
   const before = matchedJobs.length
@@ -754,6 +796,22 @@ async function selectCard(job: JobItem) {
   }
 
   await sleepAtLeast(700)
+}
+
+/**
+ * 定位预览列表里的一条：把宿主页面滚动到该职位对应的卡片，并高亮一下。
+ * 点击预览里的一条时触发——不是跳到详情页，而是"滚到那个职位在列表里的位置"。
+ * 具体实现见 ./locate.ts（拆出来便于在 dev-harness 里验证真实滚动行为）。
+ */
+function locateInList(job: JobItem): boolean {
+  return locateJobInList(job, {
+    boxOf: cardBoxOf,
+    // 定位只是"临时把这张卡露出来"，不改筛选状态、也不掺进 hiddenEls。
+    // 下一轮 applyVisualFilter 会先 restoreAllCards 再按条件重算，所以不会残留；
+    // 这样定位逻辑和筛选的隐藏记录彻底解耦，互不干扰。
+    markRevealed: () => { /* 无需登记 */ },
+    log: (text, level) => panel?.log(text, level ?? 'info'),
+  })
 }
 
 /** 预热 Boss 活跃：逐个打开职位详情，读 `.boss-active-time`，让列表统计也按 Boss 活跃过滤（较慢） */
@@ -1150,80 +1208,110 @@ function findBtnIn(container: HTMLElement, re: RegExp): HTMLElement | null {
 }
 
 /**
+ * 若有搜索词，返回【搜索列表】接口 URL；否则返回原 URL。
+ * 实现见 ./apiPager.ts 的 buildSearchUrl（已单测）。
+ * 这里额外从 capturedNet 里找站点真实发出的 search 请求，优先照抄它的参数（最准）。
+ */
+function buildSearchUrlIfNeeded(rawUrl: string, origin: string): string {
+  const searchSample = capturedNet.map((r) => String(r.url ?? '')).find((u) => /search\/joblist\.json/i.test(u))
+  return buildSearchUrl(rawUrl, origin, location.href, searchSample)
+}
+
+/**
  * 直接用接口拉第 2 页及以后的职位（绕过页面只渲染约 300 张卡的限制）。
  *
  * shouldStop：每拉完一页回调一次，返回 true 就提前收工。
  *   —— 目标数量早就够了还一路拉到底，会把"到底/无新增"的判定提前触发，
  *   反而让后面真正需要的"滚动加载"以为没货了。
+ *
+ * 具体分页循环抽到 ./apiPager.ts（可用假响应单测）。
+ * 这里只负责：拼 URL、发请求、把响应翻译成 PageData。
  */
 async function fetchJobApiPages(
   maxPages: number,
   shouldStop?: () => boolean,
 ): Promise<boolean> {
+  // 已经判定到底（本轮）：不再重复翻页，避免每次列表变动都重拉一遍造成日志空转
+  if (pagerExhausted) return false
   const rec = capturedNet.find((r) => /recommend\/job\/list|job\/list\.json|search\/joblist\.json|joblist\.json/i.test(String(r.url)))
-  if (!rec) return false
+  if (!rec) {
+    panel.log('还没有捕获到职位列表接口，无法用接口翻页（先刷新/滚动一下列表）', 'warn')
+    return false
+  }
   const origin = location.origin
   const rawUrl = String(rec.url)
-  let got = false
-  // 连着几页全是重复才认"到顶"：BOSS 相邻页之间常有重叠，单页重复不代表后面没有新职位
-  let dupStreak = 0
-  for (let p = 2; p <= maxPages; p++) {
-    try {
-      // 关键：用 URL 对象规范化拼接。
-      // 以前是字符串拼 `${base}?page=`，遇到形如
-      //   .../list.json?page=1&pageSize=15&city=...
-      // 这种把参数挂在路径后面、或站点自己拼错成 `list.json&pageSize=...` 的 URL，
-      // 会拼出 `list.json&pageSize=15...?page=2` 这种非法地址 —— 请求直接失败/返回 HTML，
-      // 于是「查看更多」永远拉不到数据。
-      const u = new URL(rawUrl.startsWith('http') ? rawUrl : origin + rawUrl)
-      u.searchParams.set('page', String(p))
-      u.searchParams.set('_', String(Date.now()))
-      const url = u.toString()
-      // 职位列表接口同样要带签名头，否则会被判非法、返回登录页 HTML
-      const res = await fetch(url, { credentials: 'include', headers: signedHeaders() })
-      const ct = res.headers.get('content-type') ?? ''
-      if (!ct.includes('json')) {
-        // 拿到了 HTML（多半是安全校验/登录页），继续翻也没意义
-        panel.log(`第 ${p} 页返回的不是 JSON（可能是安全校验），停止接口翻页`, 'warn')
-        break
-      }
-      const data = await res.json()
-      const list = data?.zpData?.jobList
-      if (Array.isArray(list) && list.length) {
-        const exists = new Set(apiJobList.map((j) => j.encryptJobId))
-        const fresh = list.filter((j) => j.encryptJobId && !exists.has(j.encryptJobId))
-        if (!fresh.length) {
-          dupStreak++
-          if (dupStreak >= 3) {
-            panel.log(`连续 ${dupStreak} 页无新增（已到池子上限），停止翻页`, 'info')
-            break
-          }
-        } else {
-          dupStreak = 0
-          apiJobList = apiJobList.concat(fresh)
-          got = true
-          panel.log(`接口拉取第 ${p} 页，新增 ${fresh.length} 个（累计 ${apiJobList.length}）`, 'ok')
-        }
-      } else {
-        panel.log('接口此页为空，停止拉取', 'info')
-        break
-      }
-      if (!data?.zpData?.hasMore) {
-        panel.log('接口已到底(hasMore=false)', 'info')
-        break
-      }
-      // 拉完这页先合并统计，再问"还要不要继续拉"
-      if (got && shouldStop?.()) {
-        panel.log(`接口拉到第 ${p} 页已够用，停止翻页`, 'info')
-        break
-      }
-    } catch (e) {
-      panel.log(`接口拉取第 ${p} 页失败：${(e as Error).message}`, 'warn')
-      break
-    }
+  // 每次现算：必须包含 DOM 合并进来的职位，否则翻页会把已有职位当成新职位重复拉
+  const existingIds = poolIds()
+
+  /** 按 base 拼第 p 页 URL 并请求，翻译成 PageData */
+  const fetchPageFrom = (base: string) => async (p: number) => {
+    // 用 URL 对象规范化拼接，避免 `list.json&pageSize=...?page=2` 这类非法地址
+    const u = new URL(base.startsWith('http') ? base : origin + base)
+    u.searchParams.set('page', String(p))
+    u.searchParams.set('_', String(Date.now()))
+    const res = await fetch(u.toString(), { credentials: 'include', headers: signedHeaders() })
+    const ct = res.headers.get('content-type') ?? ''
+    if (!ct.includes('json')) return { list: [], hasMore: false, notJson: true }
+    const data = await res.json()
+    // code!==0（code:37/38）→ 风控拦截；缺省 hasMore → 视为还有更多。统一走 toPageData
+    return toPageData(data)
   }
-  if (got) rebuildJobsFromApi()
-  return got
+
+  /**
+   * 合并新职位到池子。
+   *
+   * 去重统一走 addJobsToPool：fetchPages 已按 existingIds 过滤过 fresh 并就地加 id，
+   * 但这里再兜一层（防止 DOM 在等待期间又合并了新职位），逻辑只有一份，不会两处不一致。
+   */
+  const onFresh = (fresh: any[]) => {
+    if (!fresh.length) return
+    if (!addJobsToPool(fresh)) return
+    // 每页合并后立刻重建统计：isEnough（读 matchedJobs）才能真正生效，够数就提前收工
+    rebuildJobsFromApi()
+  }
+
+  const pagerOpts = {
+    startPage: 2,
+    maxPages,
+    existingIds,
+    onFresh,
+    isEnough: () => !!shouldStop?.(),
+    log: (t: string, lv?: 'info' | 'ok' | 'warn') => panel.log(t, lv ?? 'info'),
+    sleepMs: 450,
+    sleep: (ms: number) => sleep(ms),
+  }
+
+  // 首选：若有搜索词，用【搜索列表】接口（能翻很多页）。
+  const searchUrl = buildSearchUrlIfNeeded(rawUrl, origin)
+  const usingSearch = searchUrl !== rawUrl
+  if (usingSearch) panel.log('检测到搜索词 → 优先用搜索列表接口翻页（比推荐流多得多）', 'info')
+
+  let result = await fetchPages(fetchPageFrom(searchUrl), pagerOpts)
+
+  // 回退：只有【搜索接口被风控 / 返回非 JSON】才回退到推荐流（不能用 added===0，中文搜索易与推荐重叠）。
+  if (usingSearch && shouldFallbackToRecommend(result.stopReason)) {
+    panel.log('搜索接口被风控拦截，回退到推荐流接口', 'warn')
+    const fallback = await fetchPages(fetchPageFrom(rawUrl), pagerOpts)
+    // 计数累计两个接口的总和（否则日志"新增 N 个"只反映最后一次，偏小）
+    result = mergeFallbackResult(result, fallback)
+  }
+
+  if (result.got) rebuildJobsFromApi()
+  // 把"翻了几页、为什么停"明确打出来，避免下次又只能靠猜
+  const reasonText: Record<string, string> = {
+    maxPages: `已翻满 ${maxPages} 页`,
+    empty: '接口返回空页',
+    dupStreak: '连续多页无新增（已到池子上限）',
+    'hasMore=false': '接口明确表示没有更多',
+    enough: '已达到目标数量',
+    notJson: '被安全校验拦截（返回非 JSON）',
+    blocked: '被风控/登录校验拦截（code:37/38，需登录或请求过快）',
+  }
+  const rk = result.stopReason.startsWith('error') ? '请求出错' : (reasonText[result.stopReason] ?? result.stopReason)
+  panel.log(`接口翻页结束：共拉 ${result.pagesFetched} 页、新增 ${result.added} 个（${rk}）`, result.got ? 'info' : 'warn')
+  // 记录是否"判定到底"：到底后本轮不再反复自动翻页（否则会出现日志里那种每 2 秒重拉一次的空转）
+  pagerExhausted = ['hasMore=false', 'empty', 'dupStreak'].includes(result.stopReason) || result.stopReason.startsWith('error')
+  return result.got
 }
 
 /** 只补接口页、不碰 DOM：给批量投递前用。
@@ -1237,11 +1325,15 @@ async function fetchMoreJobsForDelivery(pages: number) {
 /** 加载更多职位：优先直接用接口拉更多页；接口没数据再回退到真实滚动加载。
  *  targetCount > 0 时一直加载，直到通过筛选的职位数达标或到底。 */
 async function loadMoreJobs(pages: number, targetCount = 0) {
-  const wantMore = targetCount > 0 ? targetCount : pages
   // 1) 直接用接口拉页（能超过页面 300 张卡的渲染上限）。
   //    每页拉完重建一次统计，够了就停，不再一路拉到底。
   const reached = () => targetCount > 0 && matchedJobs.length >= targetCount
-  await fetchJobApiPages(Math.max(30, Math.ceil(wantMore / 15) + 2), reached)
+  // 页数预算按"还差多少个"估算，而不是固定 30 页：
+  //   通过率未知，按 40% 保守估；多留 3 页余量。够用就停，不会为了凑数把 30 页全拉完。
+  const need = Math.max(0, (targetCount || 20) - matchedJobs.length)
+  const estPages = Math.ceil(need / Math.max(1, Math.round(15 * 0.4))) + 3
+  const pageBudget = Math.min(30, Math.max(4, estPages))
+  await fetchJobApiPages(pageBudget, reached)
   if (reached()) {
     panel.log(`已通过接口凑够 ${matchedJobs.length} 个达标`, 'ok')
     return
@@ -1288,7 +1380,11 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
 
 /** 触发一次真实滚动加载。
  *  关键：BOSS 靠「scroll 事件 + 到底判定」才加载下一页。直接改 scrollTop 不触发 scroll 事件，
- *  所以要用真实 wheel 事件滚动 window/容器，并多次增量滚到底，让它觉得是用户在下滑。 */
+ *  所以要用真实 wheel 事件滚动 window/容器，多次增量下滑，让它觉得是用户在下滑。
+ *
+ *  注意：**绝不回到顶部**。以前每次 scrollOnce 都先 scrollTo(0,0) 再滚到底，
+ *  于是每加载出一批新内容就"嗖"地弹回顶部重新滚一遍（用户看到的就是来回跳）。
+ *  现在从当前位置继续往下滚，并且一看到新卡片立刻停，把控制权交回外层循环。 */
 async function scrollOnce() {
   // 关键：先恢复所有卡片可见，否则被筛选隐藏的卡片会压缩列表高度、让页面失去滚动空间，无法触发加载
   showAllCards()
@@ -1309,37 +1405,34 @@ async function scrollOnce() {
   }
   panel.log(`滚动容器: ${useWindow ? 'window' : container.tagName.toLowerCase() + (container.id ? '#' + container.id : '')}（可滚 ${scrollHeightOf(useWindow, container) - clientHeightOf(useWindow, container)}px）`, 'info')
 
-  // 先恢复页面向上的滚动位置，再从当前往下，模拟真实下拉：先滚到顶部再逐段下滑
-  if (useWindow) window.scrollTo(0, 0)
-  else container.scrollTop = 0
-  await sleep(200)
-
-  // 分段真实滚轮事件下滑，每段滚一定高度，触发多次 scroll 事件
-  const total = scrollHeightOf(useWindow, container)
-  const client = clientHeightOf(useWindow, container)
-  let current = 0
-  const stepPx = Math.max(300, Math.round(client * 0.9))  // 每段约一屏
-  // 即使 total-client<=0，也至少滚一次，避免"可滚0px"时完全放弃
-  const steps = Math.max(1, Math.ceil((total - client) / stepPx) + 1)
-  for (let s = 0; s < steps; s++) {
-    current += stepPx
-    const target = Math.min(current, Math.max(total - client, 0))
-    if (useWindow) {
-      window.scrollTo(0, target)
-      dispatchWheel()
-    } else {
-      container.scrollTop = target
-      container.dispatchEvent(new WheelEvent('wheel', { deltaY: stepPx, bubbles: true, cancelable: true }))
-    }
-    await sleepAtLeast(260)
+  // 从当前位置继续往下滚，一出现新卡片就停（绝不回到顶部重新滚）
+  const scroller = {
+    getPos: () => (useWindow ? window.scrollY : container.scrollTop),
+    setPos: (v: number) => {
+      if (useWindow) window.scrollTo(0, v)
+      else container.scrollTop = v
+    },
+    getTotal: () => scrollHeightOf(useWindow, container),
+    getClient: () => clientHeightOf(useWindow, container),
+    wheel: () => {
+      if (useWindow) {
+        dispatchWheel()
+      } else {
+        try { container.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true, cancelable: true })) } catch { /* 忽略 */ }
+      }
+    },
   }
+  const client = clientHeightOf(useWindow, container)
+  await scrollDownUntilNew(scroller, {
+    stepPx: Math.max(300, Math.round(client * 0.9)),
+    settleMs: 320,
+    getCount: () => readCards().length,
+    sleep: (ms) => sleepAtLeast(ms),
+  })
 
-  // 兜底：把 window 和所有候选列表容器都滚到底，并派发 wheel，防止选择器没命中滚动容器
-  window.scrollTo(0, document.documentElement.scrollHeight)
+  // 兜底 wheel（不改变当前位置），再给站点一点渲染时间
   dispatchWheel()
-  const listEls = document.querySelectorAll<HTMLElement>('.page-job-wrapper, .job-list-wrapper, .recommend-list, .job-list-container, .job-primary-list')
-  for (const el of listEls) { el.scrollTop = el.scrollHeight; try { el.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true, cancelable: true })) } catch {} }
-  await sleepAtLeast(2200)
+  await sleepAtLeast(1200)
 }
 
 function scrollHeightOf(useWindow: boolean, c: HTMLElement): number {
@@ -1460,6 +1553,8 @@ async function runBatch() {
     // 以前这里走 loadMoreJobs → scrollOnce，滚动会把卡片销毁重建，
     // 顺带把统计（以及刚补足的数量）打回 DOM 上那十几个。
     if (cfg.schedule.loadPages > 0) {
+      // 投递前要重新拉更多页：清掉"已到底"标记，否则本轮浏览时到底过就会跳过这一步
+      pagerExhausted = false
       panel.setStatus('正在加载更多职位…')
       await fetchMoreJobsForDelivery(cfg.schedule.loadPages)
       lastJobs = collectJobs()
@@ -1608,6 +1703,8 @@ function init() {
   panel = new Panel({
     onRefresh: async () => {
       if (markStaleIfNeeded()) return
+      // 手动刷新 = 用户主动想重来：清掉"已到底"标记，允许重新翻页（比如登录后 / 换了搜索词）
+      pagerExhausted = false
       lastJobs = collectJobs()
       matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
       applyVisualFilter()
@@ -1657,6 +1754,8 @@ function init() {
     },
     onLoadMore: async () => {
       if (markStaleIfNeeded()) return
+      // 「查看更多」= 用户主动再多要点：清掉"已到底"，重试接口翻页
+      pagerExhausted = false
       // 一直滚到配置的目标数量为止；够数才停，不够就继续滚（到底则提示）
       const total = cfg.targetCount || 20
       panel.setStatus(`正在加载更多（目标 ${total} 个，当前 ${matchedJobs.length}）…`)
@@ -1823,10 +1922,23 @@ function init() {
       }
       if (panel.refreshPreview) panel.refreshPreview()
     },
+    onLocateJob: (key) => {
+      const job =
+        matchedJobs.find((j) => j.key === key) ??
+        retryQueue.find((r) => r.job.key === key)?.job ??
+        lastJobs.find((j) => j.key === key)
+      if (!job) {
+        panel.log('未找到该职位，可能已被列表刷新移除，请重新筛选后再试', 'warn')
+        return
+      }
+      locateInList(job)
+    },
     onSave: async (c) => {
       if (markStaleIfNeeded()) return
       cfg = c
       await saveConfig(c)
+      // 应用筛选改变了结果集：清掉"已到底"，让自动补足重新评估
+      pagerExhausted = false
       // 重新应用筛选：结束「显示全部」的临时状态，恢复按条件隐藏
       showAllOverride = false
       panel.log(`已应用筛选（数据源：${usingApi ? '接口' : '卡片'}）`, 'ok')
