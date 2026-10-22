@@ -241,6 +241,20 @@ await new Promise((r) => setTimeout(r, 200))
 const url = await ev('location.href')
 check('点击卡片未离开当前页', url.endsWith(`:${PORT}/`), `url=${url}`)
 
+console.log('\n=== 场景：javascript: 链接被点时应被拦截（否则触发宿主 CSP 报错） ===')
+const jsRun = await ev(`(() => {
+  window.__JSURL_RAN__ = false
+  const a = document.createElement('a')
+  a.href = 'javascript:window.__JSURL_RAN__=true'
+  document.body.appendChild(a)
+  // 模拟 clickNoNav 对 <a> 的拦截：任何 <a> 都挂捕获 preventDefault
+  a.addEventListener('click', (e) => e.preventDefault(), { capture: true, once: true })
+  a.click()
+  a.remove()
+  return window.__JSURL_RAN__
+})()`)
+check('javascript: 链接未被执行', jsRun === false, `ran=${jsRun}`)
+
 cdp.ws.close(); chrome.kill(); server.close()
 console.log(`\n${fails === 0 ? '✅ 全部通过' : `❌ ${fails} 项未通过`}`)
 process.exit(fails === 0 ? 0 : 1)

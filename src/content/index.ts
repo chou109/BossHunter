@@ -158,14 +158,16 @@ async function sleepAtLeast(ms: number) {
   }
 }
 
-/** 点击元素但阻止其默认导航（避免 javascript: 触发 CSP 拦截），只触发事件处理器。
+/** 点击元素但阻止其默认导航，只触发事件处理器。
  *  注意：对「立即沟通」这类业务按钮，preventDefault 可能拦掉其 Vue 提交逻辑，导致点击不生效。
- *  因此这里仅对真正的导航链接（带真实 href）拦截，按钮一律真实 click。 */
+ *  因此只对 <a> 拦默认行为（防止跳到详情页、或执行 javascript: 链接触发 CSP 拦截），按钮一律真实 click。 */
 function clickNoNav(el: HTMLElement) {
   const tag = el.tagName.toLowerCase()
-  const href = (el as HTMLAnchorElement).href ?? ''
-  // 只有指向详情页/新页面的 <a href> 才阻止导航；javascript: 链接和 button 不拦
-  if (tag === 'a' && href && !/^javascript:/i.test(href)) {
+  // 只要是 <a> 就拦掉默认导航：
+  //  - 真实 href：避免跳详情页
+  //  - javascript: href：避免执行 JS URL 被 CSP 拦截（BOSS 的 CSP 不允许 inline script，会报错）
+  // 两种情况都只保留元素自身的 click 处理器（Vue 逻辑）。
+  if (tag === 'a') {
     el.addEventListener('click', (e) => e.preventDefault(), { capture: true, once: true })
   }
   el.click()
@@ -778,13 +780,14 @@ async function selectCard(job: JobItem) {
     el.querySelector<HTMLElement>('.job-card-body') ??
     el
 
-  // 无论点到哪个后代 <a>，都拦掉导航（捕获阶段，只生效一次）
+  // 无论点到哪个后代 <a>，都拦掉默认导航（捕获阶段，只生效一次）。
+  // 包含 javascript: 链接：它们同样不该执行，否则会触发宿主 CSP 报错。
   const stopNav = (e: Event) => e.preventDefault()
   const anchors = Array.from(inner.querySelectorAll<HTMLAnchorElement>('a[href]'))
   for (const a of anchors) {
-    if (!/^javascript:/i.test(a.href)) a.addEventListener('click', stopNav, { capture: true })
+    a.addEventListener('click', stopNav, { capture: true })
   }
-  if (inner.tagName === 'A' && !/^javascript:/i.test((inner as HTMLAnchorElement).href)) {
+  if (inner.tagName === 'A') {
     inner.addEventListener('click', stopNav, { capture: true })
   }
 
@@ -1136,7 +1139,8 @@ async function handleSendDialog(): Promise<DialogResult> {
     if (/已向BOSS发送消息|发送成功|已发送/.test(text)) {
       const stayBtn = findBtnIn(dialog, /留在此页|留在本页|留在页面|^不了|^不用了|取消/)
       if (stayBtn) {
-        stayBtn.click()
+        // 用 clickNoNav：这些按钮常常是 <a href="javascript:;">，直接 click 会执行 JS URL 触发宿主 CSP 报错
+        clickNoNav(stayBtn)
         panel.log('已发送消息，点「留在此页」关闭弹窗', 'ok')
       } else {
         // 兜底：不点任何按钮，用 ESC 关弹窗，避免误触跳转
@@ -1151,7 +1155,7 @@ async function handleSendDialog(): Promise<DialogResult> {
     const confirmBtn = findBtnIn(dialog, /^确定$|^确认$|^发送$|就这样|^好的$/)
     if (confirmBtn && !/继续沟通|去沟通|进入聊天/.test(confirmBtn.textContent ?? '')) {
       panel.log(`检测到确认弹窗，点击「${confirmBtn.textContent?.trim()}」`, 'info')
-      confirmBtn.click()
+      clickNoNav(confirmBtn)
       return { type: 'confirm', text }
     }
 
