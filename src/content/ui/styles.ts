@@ -27,10 +27,12 @@ export const PANEL_CSS = `
 
   all: initial;
   /* 悬浮卡片：不贴满视口整高，按内容自适应，并在顶部栏之下起算 */
-  position: fixed; right: 14px; top: var(--bh-top);
+  position: fixed; right: 14px; top: var(--bh-top); left: auto;
   z-index: 2147483647;
   display: flex; flex-direction: column;
-  width: 380px; min-width: 320px; max-width: 620px;
+  width: min(380px, calc(100vw - 16px));
+  min-width: min(280px, calc(100vw - 16px));
+  max-width: min(620px, calc(100vw - 16px));
   /* 高度上限按"顶部栏之下剩余空间"算，不再写死 760px：
      写死会让面板在 top 变大时被强行压扁，内部组件跟着缩水。 */
   max-height: calc(100vh - var(--bh-top) - 12px);
@@ -46,6 +48,7 @@ export const PANEL_CSS = `
   overflow: hidden;
   isolation: isolate;
   contain: layout style;
+  container-type: inline-size;
   overscroll-behavior: contain;
 }
 
@@ -80,8 +83,9 @@ export const PANEL_CSS = `
   /* 与卡片同宽、同圆角，成为卡片自身的标题栏 */
   background: #101828; color: #fff;
   border-radius: calc(var(--bh-r-lg) - 1px) calc(var(--bh-r-lg) - 1px) 0 0;
-  user-select: none;
+  user-select: none; cursor: move; touch-action: none;
 }
+#bh-panel.is-moving .bh-head { cursor: grabbing; }
 #bh-panel .bh-mark {
   flex: none; display: grid; place-items: center;
   width: 24px; height: 24px; border-radius: var(--bh-r-sm);
@@ -704,7 +708,7 @@ export const PANEL_CSS = `
 #bh-panel .bh-sec-lead {
   margin: 0 0 12px; font-size: 11px; line-height: 1.55; color: var(--bh-ink-3);
 }
-#bh-panel .bh-box textarea.bh-input { resize: none; }
+#bh-panel .bh-box textarea.bh-input { resize: vertical; min-height: 42px; max-height: 180px; }
 
 #bh-panel .bh-fg-hidden { display: none !important; }
 
@@ -912,9 +916,26 @@ export const PANEL_CSS = `
 /* ---------- 拖拽改变宽度 ---------- */
 #bh-panel .bh-grip {
   position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
-  cursor: ew-resize; z-index: 3;
+  cursor: ew-resize; z-index: 3; touch-action: none;
 }
 #bh-panel .bh-grip:hover { background: rgba(14, 159, 110, .18); }
+#bh-panel .bh-size-grip {
+  position: absolute; left: 0; bottom: 0; z-index: 4;
+  width: 22px; height: 22px; cursor: nesw-resize; touch-action: none;
+  border-radius: 0 10px 0 0;
+}
+#bh-panel .bh-size-grip::after {
+  content: ''; position: absolute; left: 6px; bottom: 6px;
+  width: 9px; height: 9px; border-left: 2px solid var(--bh-ink-3);
+  border-bottom: 2px solid var(--bh-ink-3); opacity: .65;
+}
+#bh-panel .bh-size-grip:hover { background: var(--bh-brand-soft); }
+
+@container (max-width: 340px) {
+  #bh-panel .bh-grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #bh-panel .bh-title span { display: none; }
+  #bh-panel .bh-sec > .bh-sec-sum { padding-left: 8px; padding-right: 8px; }
+}
 
 /* ---------- 收起 / 展开：同一个外壳，只改高度 ---------- */
 /* 内容区参与高度过渡，避免收起瞬间高度跳变 */
@@ -958,6 +979,8 @@ export const PANEL_CSS = `
 #bh-panel.collapsed .bh-head {
   border-radius: calc(var(--bh-r-lg) - 1px);
 }
+#bh-panel.collapsed .bh-grip,
+#bh-panel.collapsed .bh-size-grip { display: none; }
 
 /* ---------- 吸附条 ---------- */
 #bh-trigger {

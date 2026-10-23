@@ -121,6 +121,8 @@ export class Panel {
   private previewBadgeEl: HTMLElement
 
   private bodyPadSaved: string | null = null
+  private userPositioned = false
+  private readonly boundsKey = 'bossHunterPanelBounds'
   private running = false
   private totalJobs = 0
   private matchedJobs = 0
@@ -174,6 +176,7 @@ export class Panel {
 
     this.bindEvents()
     this.makeResizable()
+    this.makeDraggable()
 
     this.triggerEl = document.createElement('div')
     this.triggerEl.id = 'bh-trigger'
@@ -186,9 +189,11 @@ export class Panel {
     document.documentElement.appendChild(this.triggerEl)
     document.documentElement.appendChild(this.root)
     this.setPageOffset(true)
+    void this.restoreBounds()
     this.startFixedBarWatch()
     this.applyCompactMode()
     window.addEventListener('resize', () => {
+      this.clampToViewport()
       this.setPageOffset(this.root.style.display !== 'none')
       this.applyCompactMode()
     })
@@ -324,6 +329,7 @@ export class Panel {
       </div>
 
       <div class="bh-grip" id="bh-grip"></div>
+      <div class="bh-size-grip" id="bh-size-grip" title="拖动调整浮窗大小" aria-label="拖动调整浮窗大小"></div>
     `
   }
 
@@ -779,10 +785,19 @@ export class Panel {
 
     const visible = this.root.style.display !== 'none'
 
-    // 1) 面板始终贴在顶部固定栏之下（收起态也一样，否则会压住头像）
+    // 初始位置避开站点顶栏；用户拖动后保留自己的坐标，并按坐标计算可用高度。
     const topInset = this.topBarsBottom()
-    // 用 CSS 变量而不是直接写 max-height：收起态的 max-height:46px 会在内联样式下失效
-    this.root.style.setProperty('--bh-top', `${topInset}px`)
+    let panelTop = topInset
+    if (this.userPositioned) {
+      const maxTop = Math.max(8, window.innerHeight - Math.min(this.root.offsetHeight || 46, window.innerHeight - 16) - 8)
+      panelTop = Math.max(8, Math.min(maxTop, Number.parseFloat(this.root.style.top) || topInset))
+      this.root.style.top = `${panelTop}px`
+    } else {
+      this.root.style.removeProperty('left')
+      this.root.style.removeProperty('right')
+      this.root.style.removeProperty('top')
+    }
+    this.root.style.setProperty('--bh-top', `${panelTop}px`)
 
     const panelW = this.root.offsetWidth || 380
     // 给左侧内容留至少 860px，否则不推挤，改为浮在上面
@@ -889,8 +904,8 @@ export class Panel {
     setInterval(() => {
       if (this.root.style.display === 'none') return
       const want = this.topBarsBottom()
-      const cur = parseFloat(this.root.style.top) || 0
-      if (Math.abs(cur - want) > 1) this.setPageOffset(true)
+      const cur = parseFloat(this.root.style.getPropertyValue('--bh-top')) || 0
+      if (!this.userPositioned && Math.abs(cur - want) > 1) this.setPageOffset(true)
       this.applyCompactMode()
     }, 1200)
   }
@@ -911,27 +926,163 @@ export class Panel {
   }
 
   private makeResizable() {
-    const grip = this.root.querySelector<HTMLElement>('#bh-grip')!
-    let dragging = false
-    let startX = 0
-    let startW = 0
+    const bindResize = (grip: HTMLElement, resizeHeight: boolean) => {
+      let pointerId: number | null = null
+      let startX = 0
+      let startY = 0
+      let startW = 0
+      let startH = 0
+      let startLeft = 0
+      let startTop = 0
 
-    grip.addEventListener('mousedown', (e) => {
-      dragging = true
-      startX = e.clientX
-      startW = this.root.offsetWidth
-      e.preventDefault()
-      e.stopPropagation()
-    })
-    window.addEventListener('mousemove', (e) => {
-      if (!dragging) return
-      const next = Math.min(620, Math.max(320, startW - (e.clientX - startX)))
-      this.root.style.width = `${next}px`
+      const move = (e: PointerEvent) => {
+        if (e.pointerId !== pointerId) return
+        const maxW = Math.max(160, Math.min(620, window.innerWidth - 16))
+        const minW = Math.min(280, maxW)
+        const width = Math.max(minW, Math.min(maxW, startW + startX - e.clientX))
+        const left = Math.max(8, Math.min(window.innerWidth - width - 8, startLeft + startW - width))
+        this.root.style.width = `${width}px`
+        this.root.style.left = `${left}px`
+        this.root.style.right = 'auto'
+        if (resizeHeight) {
+          const maxH = Math.max(150, window.innerHeight - startTop - 8)
+          const minH = Math.min(300, maxH)
+          this.root.style.height = `${Math.max(minH, Math.min(maxH, startH + e.clientY - startY))}px`
+        }
+        this.setPageOffset(true)
+        this.applyCompactMode()
+      }
+      const end = (e: PointerEvent) => {
+        if (e.pointerId !== pointerId) return
+        pointerId = null
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', end)
+        window.removeEventListener('pointercancel', end)
+        this.root.classList.remove('is-resizing')
+        this.clampToViewport()
+        this.setPageOffset(true)
+        void this.saveBounds()
+      }
+
+      grip.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return
+        const rect = this.root.getBoundingClientRect()
+        pointerId = e.pointerId
+        startX = e.clientX
+        startY = e.clientY
+        startW = rect.width
+        startH = rect.height
+        startLeft = rect.left
+        startTop = rect.top
+        this.userPositioned = true
+        this.root.style.left = `${rect.left}px`
+        this.root.style.right = 'auto'
+        this.root.style.top = `${rect.top}px`
+        this.root.setPointerCapture?.(e.pointerId)
+        this.root.classList.add('is-resizing')
+        e.preventDefault()
+        e.stopPropagation()
+        window.addEventListener('pointermove', move)
+        window.addEventListener('pointerup', end)
+        window.addEventListener('pointercancel', end)
+      })
+    }
+
+    bindResize(this.root.querySelector<HTMLElement>('#bh-grip')!, false)
+    bindResize(this.root.querySelector<HTMLElement>('#bh-size-grip')!, true)
+  }
+
+  private makeDraggable() {
+    const head = this.root.querySelector<HTMLElement>('.bh-head')!
+    let pointerId: number | null = null
+    let startX = 0
+    let startY = 0
+    let startLeft = 0
+    let startTop = 0
+
+    const move = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return
+      const rect = this.root.getBoundingClientRect()
+      const left = Math.max(8, Math.min(window.innerWidth - rect.width - 8, startLeft + e.clientX - startX))
+      const top = Math.max(8, Math.min(window.innerHeight - Math.min(rect.height, window.innerHeight - 16) - 8, startTop + e.clientY - startY))
+      this.userPositioned = true
+      this.root.style.left = `${left}px`
+      this.root.style.right = 'auto'
+      this.root.style.top = `${top}px`
       this.setPageOffset(true)
+    }
+    const end = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return
+      pointerId = null
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      this.root.classList.remove('is-moving')
+      this.clampToViewport()
+      this.setPageOffset(true)
+      void this.saveBounds()
+    }
+
+    head.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return
+      const rect = this.root.getBoundingClientRect()
+      pointerId = e.pointerId
+      startX = e.clientX
+      startY = e.clientY
+      startLeft = rect.left
+      startTop = rect.top
+      this.userPositioned = true
+      this.root.style.left = `${rect.left}px`
+      this.root.style.right = 'auto'
+      this.root.style.top = `${rect.top}px`
+      head.setPointerCapture(e.pointerId)
+      this.root.classList.add('is-moving')
+      e.preventDefault()
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', end)
+      window.addEventListener('pointercancel', end)
     })
-    window.addEventListener('mouseup', () => {
-      dragging = false
-    })
+  }
+
+  private clampToViewport() {
+    if (!this.userPositioned) return
+    const rect = this.root.getBoundingClientRect()
+    const left = Math.max(8, Math.min(window.innerWidth - rect.width - 8, rect.left))
+    const top = Math.max(8, Math.min(window.innerHeight - Math.min(rect.height, window.innerHeight - 16) - 8, rect.top))
+    this.root.style.left = `${left}px`
+    this.root.style.right = 'auto'
+    this.root.style.top = `${top}px`
+  }
+
+  private async restoreBounds() {
+    try {
+      const raw = await chrome.storage.local.get(this.boundsKey)
+      const saved = raw?.[this.boundsKey]
+      if (!saved || !Number.isFinite(saved.left) || !Number.isFinite(saved.top)) return
+      this.userPositioned = true
+      const maxW = Math.max(160, Math.min(620, window.innerWidth - 16))
+      this.root.style.width = `${Math.max(Math.min(280, maxW), Math.min(maxW, Number(saved.width) || 380))}px`
+      if (Number.isFinite(saved.height)) this.root.style.height = `${Math.max(150, Math.min(window.innerHeight - 16, Number(saved.height)))}px`
+      this.root.style.left = `${Number(saved.left)}px`
+      this.root.style.right = 'auto'
+      this.root.style.top = `${Number(saved.top)}px`
+      this.clampToViewport()
+      this.setPageOffset(true)
+      this.applyCompactMode()
+    } catch {
+      // 浮窗几何信息无法读取时使用默认位置。
+    }
+  }
+
+  private async saveBounds() {
+    try {
+      const rect = this.root.getBoundingClientRect()
+      await chrome.storage.local.set({
+        [this.boundsKey]: { left: rect.left, top: rect.top, width: rect.width, height: this.root.style.height ? rect.height : null },
+      })
+    } catch {
+      // 保存失败只影响下次打开时的位置记忆。
+    }
   }
 
   /** 步骤条 + 主按钮文案 + 提示语，全部由当前状态推导 */
