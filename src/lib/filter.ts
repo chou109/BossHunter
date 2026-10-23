@@ -280,6 +280,17 @@ export function evaluateFilter(job: JobItem, cfg: AppConfig): FilterReport {
   const preferredUnknown = preferred.some((c) => c.status === 'unknown')
   const needsReview = (unknownBehavior === 'review' && (requiredUnknown.length > 0 || preferredUnknown)) || preferredMatched < minPreferred
   if (needsReview) {
+    // “部分符合”必须有正向证据：至少一个启用的规则明确命中。
+    // 只有字段缺失（例如整页都没有 Boss 活跃度），或优选项一个都没命中，
+    // 不能算作部分符合，否则复核队列会变成“所有无法判定的职位”。
+    const hasPositiveMatch = checks.some((c) => c.status === 'pass')
+    if (!hasPositiveMatch) {
+      const reasons = [
+        ...checks.filter((c) => c.status === 'fail').map((c) => c.reason || `${c.label}未满足`),
+        ...checks.filter((c) => c.status === 'unknown').map((c) => `${c.label}信息不足`),
+      ]
+      return { status: 'excluded', reason: reasons.join('；') || '没有规则命中', checks, preferredMatched, preferredTotal }
+    }
     return {
       status: 'partial',
       reason: [...requiredUnknown.map((c) => `${c.label}信息不足`), ...preferred.filter((c) => c.status !== 'pass').map((c) => c.reason || `${c.label}未满足`)].join('；') || `优选条件命中 ${preferredMatched}/${preferredTotal}`,
