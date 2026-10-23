@@ -11,8 +11,9 @@ export default defineManifest({
     '128': 'public/icons/icon128.png',
   },
   action: {
-    default_popup: 'src/popup/index.html',
-    default_title: 'BossHunter - Boss猎手',
+    // 不配 default_popup：点图标由 background 的 action.onClicked 接管，
+    // 直接唤起页面内已有的面板，避免「弹窗配置页 + 面板设置页」两套界面各写一份配置。
+    default_title: 'BossHunter - Boss猎手（点击打开面板）',
   },
   background: {
     service_worker: 'src/background/index.ts',
@@ -31,6 +32,7 @@ export default defineManifest({
       world: 'MAIN',
     },
   ],
-  permissions: ['storage', 'notifications'],
+  // tabs/windows：点图标时定位并激活 zhipin 标签页、聚焦窗口
+  permissions: ['storage', 'notifications', 'tabs'],
   host_permissions: ['https://*.zhipin.com/*', 'https://zhipin.com/*'],
 })

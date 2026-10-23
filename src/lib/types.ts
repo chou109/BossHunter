@@ -118,6 +118,24 @@ export interface AppConfig {
   excluded: string[]
   /** 预热 Boss 活跃：应用筛选时逐个打开详情读取活跃状态，让列表统计也按 Boss 活跃过滤（较慢） */
   warmBossActive: boolean
+  /**
+   * 「高级设置」的自定义默认值（可选）。
+   * 用户点「保存为默认」后写入；「恢复默认」时优先用它，没有则回退到内置推荐值。
+   * 缺省（undefined）表示：还没保存过自定义默认。
+   */
+  advancedDefaults?: AdvancedDefaults | null
+}
+
+/** 高级设置的一组默认值 */
+export interface AdvancedDefaults {
+  roundSize: number
+  loadPages: number
+  /** 轮间隔（毫秒，固定模式） */
+  roundInterval: number
+  /** 每条间隔（毫秒，固定模式） */
+  itemInterval: number
+  deliveryLimit: number
+  targetCount: number
 }
 
 export interface JobItem {
@@ -193,6 +211,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   excluded: [],
   warmBossActive: false,
+  advancedDefaults: null,
 }
 
 export const STORAGE_KEY = 'bossHelperLiteConfig'

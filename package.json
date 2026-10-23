@@ -7,17 +7,25 @@
   "description": "Boss猎手：Boss直聘批量投递、自动打招呼、精细筛选（日薪/时薪/月薪、Boss活跃）的 Chrome MV3 扩展",
   "scripts": {
     "dev": "vite",
+    "watch": "node scripts/watch.mjs",
     "build": "tsc --noEmit && vite build",
     "build:only": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "node scripts/verify-panel.mjs",
+    "test:presets": "node scripts/test-presets.mjs",
+    "test:apply": "node scripts/test-apply-flow.mjs",
+    "test:locate": "node scripts/test-locate-job.mjs",
+    "test:pager": "node scripts/test-api-pager.mjs",
+    "test:pager:e2e": "node scripts/test-api-pager-e2e.mjs",
+    "test:copy": "node scripts/test-copy-logs.mjs",
+    "test:scroll": "node scripts/test-scroll-list.mjs",
+    "probe:boss": "node scripts/probe-boss-api.mjs",
+    "capture:boss": "node scripts/capture-boss-jobs.mjs"
   },
-  "dependencies": {
-    "vue": "^3.5.13"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0",
     "@types/chrome": "^0.0.287",
-    "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   }

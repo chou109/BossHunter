@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>固定 header 挤压验证</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Microsoft YaHei", sans-serif; background: #f6f7f9; }
+  /* 模拟 BOSS 的两条 fixed 横条 */
+  .zp-nav { position: fixed; left: 0; right: 0; top: 0; height: 64px; background: #0b1a2b; z-index: 100; display: flex; align-items: center; }
+  .zp-nav .inner { width: 100%; display: flex; align-items: center; gap: 16px; padding: 0 20px; color: #fff; }
+  .zp-nav .logo { font-weight: 700; color: #2fd6c3; white-space: nowrap; }
+  .zp-nav .links { display: flex; gap: 12px; color: #cfd8e3; white-space: nowrap; }
+  .zp-nav .spacer { flex: 1; }
+  .zp-nav .login { border: 1px solid #2fd6c3; color: #2fd6c3; border-radius: 14px; padding: 3px 10px; font-size: 12px; white-space: nowrap; }
+  .zp-nav .avatar { width: 30px; height: 30px; border-radius: 50%; background: #2fd6c3; flex: none; }
+  .zp-search { position: fixed; left: 0; right: 0; top: 64px; height: 54px; background: #0e2237; z-index: 99; display: flex; align-items: center; padding: 0 20px; }
+  .zp-search .bar { flex: 1; max-width: 480px; height: 34px; border-radius: 17px; background: #fff; }
+  .zp-main { padding-top: 140px; display: flex; gap: 16px; max-width: 1250px; margin: 0 auto; }
+  .zp-list { width: 400px; }
+  .fcard { background: #fff; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .zp-detail { flex: 1; background: #fff; border-radius: 8px; padding: 16px; min-height: 900px; }
+</style>
+</head>
+<body>
+<header class="zp-nav"><div class="inner">
+  <span class="logo">BOSS直聘</span>
+  <span class="links"><span>首页</span><span>职位</span><span>公司</span><span>校园·海归</span></span>
+  <span class="spacer"></span>
+  <span class="login" id="login">登录/注册</span>
+  <span class="avatar" id="avatar"></span>
+</div></header>
+<div class="zp-search"><div class="bar"></div></div>
+<main class="zp-main">
+  <div class="zp-list" id="list"></div>
+  <div class="zp-detail">详情</div>
+</main>
+<script type="module" src="./fixedbar.ts"></script>
+</body>
+</html>

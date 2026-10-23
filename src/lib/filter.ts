@@ -82,12 +82,26 @@ function matchExperience(expText: string, option: ExperienceFilter): FilterResul
   return { pass: false, reason: `经验不符: ${expText || '(未知)'}（需 ${EXPERIENCE_LABELS[option]}）` }
 }
 
-/** 判断是否为实习职位（仅留实习生用）：职位名含"实习"或 jobType=4 */
+/**
+ * 判断是否为实习职位（仅留实习生用）。
+ *
+ * 实测：BOSS 职位列表接口里 `jobType` 一律是 0，`jobExperience` 也常是「经验不限」，
+ * 所以只看这两个字段会把**所有职位**判成非实习 —— 内置预设「前端开发·实习向」一启用就筛空。
+ * 现在改为多线索判定，并且：**找不到任何实习/全职线索时放行**（宁可多留，不要误杀）。
+ */
+function internVerdict(job: JobItem): 'intern' | 'fulltime' | 'unknown' {
+  const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')}`
+  // 明确的实习线索
+  if (/实习|intern|实习生|在校|应届/i.test(text)) return 'intern'
+  if (job.jobType === 4) return 'intern'
+  // 明确的全职线索：有经验年限要求 → 基本可以断定不是实习
+  if (/\d+\s*-\s*\d+\s*年|\d+年以上|5-10年|10年以上/.test(job.experience || '')) return 'fulltime'
+  return 'unknown'
+}
+
+/** 仅留实习生时是否通过：明确全职才剔除，未知放行 */
 function isInternJob(job: JobItem): boolean {
-  if (/实习/.test(job.jobName)) return true
-  if (job.jobType === 4) return true
-  if (/实习/.test(job.experience || '')) return true
-  return false
+  return internVerdict(job) !== 'fulltime'
 }
 
 export function passFilter(job: JobItem, cfg: AppConfig): FilterResult {
@@ -127,6 +141,9 @@ export function passFilter(job: JobItem, cfg: AppConfig): FilterResult {
   }
 
   // 薪资（按薪资描述里的单位分别匹配）
+  // BOSS 目前把薪资渲染成 SVG、接口也返回空串，salaryDesc 通常是空的。
+  // 这时 parseRange 得不到数字 → matchSalary 会放行（不误杀），
+  // 但也意味着"薪资筛选实际未生效"，这一点在面板上会提示用户。
   const unit = salaryUnit(job.salaryDesc)
   if (unit === 'D' || unit === 'K' || unit === 'M' || unit === 'H') {
     // 日薪 / 月薪 / 时薪分别用对应范围

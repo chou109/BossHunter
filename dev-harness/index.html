@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>BossHunter 控制台 · 视觉验收</title>
+<!--
+  面板视觉验收 harness：在无头 Chrome 里加载真实 panel.ts 渲染出的 DOM，
+  背景用伪装的 BOSS 列表页，验证"抽屉叠在宿主页面上"时的真实观感。
+-->
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #eef1f5; color: #1f2329;
+  }
+  /* 模拟 BOSS 列表页 */
+  .fake-site { display: flex; max-width: 1320px; margin: 0 auto; gap: 14px; padding: 14px; height: 100vh; }
+  .col-list { width: 300px; flex: none; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .col-detail { flex: 1; background: #fff; border-radius: 10px; padding: 18px; overflow: hidden; }
+  .fcard { background: #fff; border: 1px solid #e8ecf1; border-radius: 8px; padding: 12px; }
+  .fcard h4 { margin: 0 0 6px; font-size: 13px; }
+  .fcard .s { color: #f05a28; font-weight: 700; font-size: 13px; float: right; }
+  .fcard .m { color: #8a96a8; font-size: 11px; margin-top: 6px; }
+  .bars { height: 8px; background: #eef1f5; border-radius: 4px; margin: 10px 0; }
+  .bars.short { width: 62%; }
+  h3 { margin: 0 0 10px; font-size: 16px; }
+  .sw { position: fixed; right: 400px; bottom: 16px; z-index: 9; display: flex; gap: 6px; }
+  .sw button {
+    padding: 6px 12px; border: 1px solid #d3d9e2; border-radius: 8px; background: #fff;
+    font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .sw button:hover { background: #f7f8fa; }
+</style>
+</head>
+<body>
+<div class="fake-site">
+  <div class="col-list">
+    <div class="fcard"><h4>UE开发工程师<span class="s">6-11K</span></h4><div class="m">武汉 · 江夏区 · 1-3年</div></div>
+    <div class="fcard"><h4>unity开发<span class="s">10-15K</span></h4><div class="m">武汉 · 江夏区 · 3-5年</div></div>
+    <div class="fcard"><h4>UE5地编（应届生）<span class="s">4-6K</span></h4><div class="m">武汉 · 汉阳区</div></div>
+    <div class="fcard"><h4>HMI开发工程师<span class="s">10-15K</span></h4><div class="m">武汉 · 流芳</div></div>
+  </div>
+  <div class="col-detail">
+    <h3>UE开发工程师</h3>
+    <div class="bars"></div><div class="bars short"></div>
+    <div class="bars short"></div><div class="bars"></div><div class="bars short"></div>
+  </div>
+</div>
+
+<div class="sw">
+  <button data-state="ready">已筛出</button>
+  <button data-state="running">投递中</button>
+  <button data-state="empty">被筛空</button>
+  <button data-state="stale">上下文失效</button>
+  <button data-tab="settings">设置页</button>
+  <button data-tab="log">日志页</button>
+</div>
+
+<script type="module">
+  import './render'
+</script>
+</body>
+</html>
