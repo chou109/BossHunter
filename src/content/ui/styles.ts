@@ -425,23 +425,6 @@ export const PANEL_CSS = `
 }
 #bh-panel .bh-row-actions { flex: none; display: flex; gap: 4px; opacity: .25; transition: opacity .12s ease; }
 #bh-panel .bh-row:hover .bh-row-actions, #bh-panel .bh-row:focus-within .bh-row-actions { opacity: 1; }
-/* 待复核行有四个操作按钮；独立成下一行，避免横向挤压职位信息。 */
-#bh-panel .bh-row-review {
-  display: grid; grid-template-columns: 16px minmax(0, 1fr);
-  align-items: start; column-gap: var(--bh-s2); row-gap: 6px;
-  padding: 9px var(--bh-s2);
-}
-#bh-panel .bh-row-review > .bh-job-select { grid-column: 1; grid-row: 1 / span 2; margin-top: 2px; }
-#bh-panel .bh-row-review > .bh-row-main { grid-column: 2; grid-row: 1; width: 100%; }
-#bh-panel .bh-row-review .bh-row-sub {
-  display: block; white-space: normal; overflow-wrap: anywhere; line-height: 1.45;
-}
-#bh-panel .bh-row-review .bh-row-salary { display: block; margin-top: 3px; }
-#bh-panel .bh-row-review > .bh-row-actions {
-  grid-column: 2; grid-row: 2; flex-wrap: wrap; gap: 5px;
-  opacity: 1; min-width: 0;
-}
-#bh-panel .bh-row-review .bh-minibtn { min-height: 28px; padding: 4px 8px; }
 #bh-panel .bh-minibtn {
   padding: 3px 8px; border: 1px solid var(--bh-line); border-radius: 6px;
   background: var(--bh-surface); color: var(--bh-ink-2);

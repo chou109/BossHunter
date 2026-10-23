@@ -1,4 +1,4 @@
-import type { AppConfig, BossActive, ExperienceFilter, JobItem, RangeSetting, TimeInterval, AdvancedDefaults, AiSettings } from '../lib/types'
+import type { AppConfig, BossActive, ExperienceFilter, JobItem, RangeSetting, TimeInterval, AdvancedDefaults } from '../lib/types'
 import { BOSS_ACTIVE_LABELS, EXPERIENCE_LABELS } from '../lib/types'
 import { addPreset, loadPresets, removePreset } from '../lib/preset-store'
 import type { FilterPreset } from '../lib/presets'
@@ -7,7 +7,6 @@ import { ICON, LOGO_MARK } from './ui/icons'
 import { PANEL_CSS, LOCATE_CSS } from './ui/styles'
 import { renderGreeting } from '../lib/greeting'
 import { SAFETY } from '../lib/safety'
-import { evaluateFilter } from '../lib/filter'
 
 type LogLevel = 'info' | 'ok' | 'warn'
 export type TabName = 'preview' | 'log' | 'settings'
@@ -24,13 +23,9 @@ export interface PanelHandlers {
   getConfig: () => AppConfig
   getMatched: () => JobItem[]
   getAllJobs: () => JobItem[]
-  getReview: () => JobItem[]
   getRetry: () => { job: JobItem; reason: string }[]
   getExcluded: () => Set<string>
   toggleExclude: (key: string) => void
-  applyDecision: (keys: string[], decision: 'keep' | 'exclude' | 'review') => Promise<void>
-  onAnalyzeAi: (job: JobItem) => Promise<string>
-  onTestAi: (settings: AiSettings) => Promise<string>
   onRetry: (key: string) => void
   /** 点击预览里的一条 → 滚动页面到该职位在列表中的位置（并高亮） */
   onLocateJob: (key: string) => void
@@ -425,25 +420,13 @@ export class Panel {
     // 预览区「重试 / 排除 / 定位到列表」事件委托
     this.previewEl.addEventListener('click', (e) => {
       const t = e.target as HTMLElement
-      const bulk = t.closest<HTMLElement>('[data-bulk-decision]')
+      const bulk = t.closest<HTMLElement>('[data-bulk-toggle]')
       if (bulk) {
-        const decision = bulk.dataset.bulkDecision as 'keep' | 'exclude' | 'review'
         const keys = Array.from(this.previewEl.querySelectorAll<HTMLInputElement>('.bh-job-select:checked')).map((x) => x.value)
-        if (keys.length) void this.handlers.applyDecision(keys, decision).then(() => this.renderPreview())
-        return
-      }
-      const singleDecision = t.closest<HTMLElement>('[data-single-decision]')
-      if (singleDecision) {
-        void this.handlers.applyDecision([singleDecision.dataset.key || ''], singleDecision.dataset.singleDecision as 'keep' | 'exclude' | 'review').then(() => this.renderPreview())
-        return
-      }
-      const analyze = t.closest<HTMLElement>('.bh-ai-analyze')
-      if (analyze) {
-        const job = [...this.handlers.getReview(), ...this.handlers.getMatched()].find((j) => j.key === analyze.dataset.key)
-        if (job) {
-          analyze.textContent = '分析中…'
-          void this.handlers.onAnalyzeAi(job).then((answer) => { analyze.textContent = 'AI分析'; window.alert(answer) }).catch((err) => { analyze.textContent = 'AI分析'; window.alert(`AI分析失败：${String(err)}`) })
-        }
+        const targetExcluded = bulk.dataset.bulkToggle === 'true'
+        const excluded = this.handlers.getExcluded()
+        const changes = keys.filter((key) => excluded.has(key) !== targetExcluded)
+        if (changes.length) void Promise.all(changes.map((key) => this.handlers.toggleExclude(key))).then(() => this.renderPreview())
         return
       }
       const select = t.closest<HTMLInputElement>('.bh-job-select')
@@ -481,36 +464,8 @@ export class Panel {
     // 设置区分组的展开/收起（button 点击 → 手写高度补间）
     this.settingsEl.addEventListener('click', (e) => {
       const t = e.target as HTMLElement
-      const all = t.closest<HTMLElement>('[data-rule-all]')
-      if (all) {
-        this.settingsEl.querySelectorAll<HTMLSelectElement>('[data-rule]').forEach((el) => { el.value = all.dataset.ruleAll || 'required' })
-        return
-      }
-      const test = t.closest<HTMLElement>('[data-ai-test]')
-      if (test) {
-        const result = this.settingsEl.querySelector<HTMLElement>('[data-ai-test-result]')
-        const cfg = this.readFormIntoConfig()
-        test.setAttribute('disabled', 'true'); if (result) result.textContent = '正在测试…'
-        void this.handlers.onTestAi(cfg.aiSettings).then((v) => { if (result) result.textContent = v }).catch((err) => { if (result) result.textContent = String(err) }).finally(() => test.removeAttribute('disabled'))
-        return
-      }
-      const addPrompt = t.closest<HTMLElement>('[data-ai-add-prompt]')
-      if (addPrompt) {
-        const cfg = this.readFormIntoConfig()
-        const prompt = cfg.aiSettings.prompt.trim()
-        if (prompt && !cfg.aiSettings.promptPresets.includes(prompt)) cfg.aiSettings.promptPresets.push(prompt)
-        void this.handlers.onSave(cfg).then(() => this.renderSettings())
-        return
-      }
       const head = t.closest<HTMLElement>('.bh-sec-sum')
       if (head) this.toggleSection(head)
-    })
-    this.settingsEl.addEventListener('change', (e) => {
-      const select = (e.target as HTMLElement).closest<HTMLSelectElement>('[data-ai-prompt-preset]')
-      if (!select) return
-      const prompt = this.handlers.getConfig().aiSettings.promptPresets[Number(select.value)]
-      const textarea = this.settingsEl.querySelector<HTMLTextAreaElement>('[data-k="aiPrompt"]')
-      if (textarea && prompt) textarea.value = prompt
     })
   }
 
@@ -1287,7 +1242,6 @@ export class Panel {
 
   private renderPreview() {
     const jobs = this.handlers.getMatched()
-    const partial = this.handlers.getReview()
     const excluded = this.handlers.getExcluded()
 
     // 同一职位不能既在「这些没发出去」又在「可投递」里出现（以前会重复渲染，用户根本分不清投没投）。
@@ -1304,7 +1258,7 @@ export class Panel {
       uniqJobs.push(j)
     }
 
-    if (!uniqJobs.length && !retries.length && !partial.length) {
+    if (!uniqJobs.length && !retries.length) {
       const reading = this.totalJobs === 0
       this.previewEl.innerHTML = reading
         ? this.emptyState(ICON.inbox, '还没有读到职位', '请在 Boss 直聘的职位列表页使用；列表加载完成后这里会自动出现名单。')
@@ -1317,7 +1271,7 @@ export class Panel {
     }
 
     let html = ''
-    const bulkBar = `<div class="bh-bulkbar" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;"><span style="margin-right:auto;color:var(--bh-ink-3)">勾选职位后批量处理</span><button class="bh-minibtn" data-bulk-decision="keep">保留</button><button class="bh-minibtn danger" data-bulk-decision="exclude">排除</button><button class="bh-minibtn" data-bulk-decision="review">待复核</button></div>`
+    const bulkBar = (excluded: boolean) => `<div class="bh-bulkbar" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;"><span style="margin-right:auto;color:var(--bh-ink-3)">勾选职位后批量处理</span><button class="bh-minibtn ${excluded ? 'ok' : 'danger'}" data-bulk-toggle="${excluded}">${excluded ? '批量恢复' : '批量排除'}</button></div>`
     if (retries.length) {
       html += `<div class="bh-failbox">
         <div class="bh-grouphd">${ICON.alert}<span>这些没发出去</span><span class="bh-grouphd-n">${retries.length}</span></div>
@@ -1339,7 +1293,7 @@ export class Panel {
     const kept = uniqJobs.filter((j) => !excluded.has(j.key) && !retryKeys.has(j.key))
     html += `<div class="bh-grouphd">${ICON.check}<span>可投递</span><span class="bh-grouphd-n">${kept.length}</span>`
     if (excluded.size) html += `<span style="margin-left:auto;font-weight:400;color:var(--bh-ink-3);font-size:11px;">已排除 ${excluded.size}</span>`
-    html += `</div>${bulkBar}<div class="bh-list">`
+    html += `</div>${bulkBar(false)}<div class="bh-list">`
 
     for (const j of kept) {
       const name = j.jobName || '未知职位'
@@ -1358,19 +1312,10 @@ export class Panel {
     }
     html += `</div>`
 
-    if (partial.length) {
-      html += `<div class="bh-grouphd" style="margin-top:14px;">${ICON.alert}<span>部分符合 · 待复核</span><span class="bh-grouphd-n">${partial.length}</span></div>${bulkBar}<div class="bh-list">`
-      for (const j of partial) {
-        const rowReason = evaluateFilter(j, this.handlers.getConfig()).reason
-        html += `<div class="bh-row bh-row-open bh-row-review" data-key="${esc(j.key)}" role="button" tabindex="0" title="${esc(rowReason)}"><input class="bh-job-select" type="checkbox" value="${esc(j.key)}" aria-label="选择${esc(j.jobName)}"><div class="bh-row-main"><span class="bh-row-name">${esc(j.jobName || '未知职位')}</span><span class="bh-row-sub">${esc([j.company, j.address, rowReason].filter(Boolean).join(' · '))}</span><span class="bh-row-salary">${esc(j.salaryDesc || '薪资未知')}</span></div><div class="bh-row-actions"><button class="bh-minibtn bh-ai-analyze" data-key="${esc(j.key)}">AI分析</button><button class="bh-minibtn" data-single-decision="keep" data-key="${esc(j.key)}">保留</button><button class="bh-minibtn danger" data-single-decision="exclude" data-key="${esc(j.key)}">排除</button><button class="bh-minibtn" data-single-decision="review" data-key="${esc(j.key)}">复核</button></div></div>`
-      }
-      html += `</div>`
-    }
-
     // 已排除的单独一组，避免混在"可投递"里让人误以为会被投出去
     if (excluded.size) {
       const exJobs = this.handlers.getAllJobs().filter((j) => excluded.has(j.key))
-      html += `<div class="bh-grouphd" style="margin-top:14px;">${ICON.close}<span>已排除</span><span class="bh-grouphd-n">${exJobs.length}</span></div>${bulkBar}<div class="bh-list">`
+      html += `<div class="bh-grouphd" style="margin-top:14px;">${ICON.close}<span>已排除</span><span class="bh-grouphd-n">${exJobs.length}</span></div>${bulkBar(true)}<div class="bh-list">`
       for (const j of exJobs) {
         const name = j.jobName || '未知职位'
         const salary = j.salaryDesc || '薪资未知'
@@ -1584,15 +1529,6 @@ export class Panel {
       const targets = cfg.jobTargets
       const targetBody = `<div class="bh-grid3">${this.fg('工作性质', `<select class="bh-input" data-k="targetEmployment"><option value="any"${targets.employmentType === 'any' ? ' selected' : ''}>不限</option><option value="fulltime"${targets.employmentType === 'fulltime' ? ' selected' : ''}>全职</option><option value="intern"${targets.employmentType === 'intern' ? ' selected' : ''}>实习</option><option value="parttime"${targets.employmentType === 'parttime' ? ' selected' : ''}>兼职</option></select>`)}${this.fg('毕业届别', `<input class="bh-input" data-k="graduationYear" value="${esc(targets.graduationYear)}" placeholder="如 2027">`)}${this.fg('目标地点', `<textarea class="bh-input" data-k="locations" rows="1" placeholder="每行一个；不限留空">${esc(targets.locations.join('\n'))}</textarea>`)}</div>`
 
-      const ruleSpecs: [string, string, boolean][] = [
-        ['jobTitle', '职位关键词', f.jobTitle.enable && f.jobTitle.value.length > 0], ['company', '公司关键词', f.company.enable && f.company.value.length > 0], ['tags', '标签 / 技能', f.tags.enable && f.tags.value.length > 0],
-        ['excludeKeywords', '排除关键词', f.excludeKeywords.length > 0], ['daySalary', '日薪', f.daySalary.enable], ['monthlySalary', '月薪', f.monthlySalary.enable], ['hourlySalary', '时薪', f.hourlySalary.enable], ['experience', '工作经验', f.experience !== 'none'],
-        ['employmentType', '工作性质', targets.employmentType !== 'any' || f.onlyIntern], ['location', '工作地点', targets.locations.length > 0], ['graduationYear', '毕业届别', !!targets.graduationYear], ['bossActive', 'Boss 活跃度', f.bossActive !== 'none'], ['bossOnlineOnly', 'Boss 在线', f.bossOnlineOnly], ['goldHunter', '猎头过滤', f.goldHunter], ['bossGoldMedalHr', '金牌面试官', f.bossGoldMedalHr], ['friendStatus', '已沟通过滤', f.friendStatus], ['excludeNegotiable', '排除面议', f.excludeNegotiable],
-      ]
-      const rulesBody = `<p class="bh-sec-lead">必须项不满足会排除；优选项用于部分匹配复核。规则信息不完整时默认进入待复核。</p><div style="display:flex;gap:6px;margin-bottom:8px"><button type="button" class="bh-minibtn" data-rule-all="required">全部设为必须</button><button type="button" class="bh-minibtn" data-rule-all="preferred">全部设为优选</button></div>${ruleSpecs.filter(([, , on]) => on).map(([key, label]) => `<div class="bh-fg" style="display:flex;align-items:center;justify-content:space-between"><span>${label}</span><select class="bh-input" style="width:auto" data-rule="${key}"><option value="required"${cfg.rulePreferences.priorities[key as keyof typeof cfg.rulePreferences.priorities] !== 'preferred' ? ' selected' : ''}>必须</option><option value="preferred"${cfg.rulePreferences.priorities[key as keyof typeof cfg.rulePreferences.priorities] === 'preferred' ? ' selected' : ''}>优选</option></select></div>`).join('')}<div class="bh-fg"><label>至少命中几个优选条件 <input type="number" min="0" max="20" class="bh-input" data-k="minPreferredMatches" value="${cfg.rulePreferences.minPreferredMatches}"></label></div><div class="bh-fg"><label>信息缺失时 <select class="bh-input" data-k="unknownBehavior"><option value="review"${cfg.rulePreferences.unknownBehavior === 'review' ? ' selected' : ''}>待复核</option><option value="pass"${cfg.rulePreferences.unknownBehavior === 'pass' ? ' selected' : ''}>按通过处理</option><option value="exclude"${cfg.rulePreferences.unknownBehavior === 'exclude' ? ' selected' : ''}>排除</option></select></label></div>`
-      const ai = cfg.aiSettings
-      const aiBody = `<div class="bh-sec-lead">仅在你点击某个待复核岗位的「AI分析」时请求模型。兼容 OpenAI Chat Completions 格式。</div>${this.fg('API 地址', `<input class="bh-input" data-k="aiApiBaseUrl" value="${esc(ai.apiBaseUrl)}" placeholder="https://api.example.com/v1">`)}${this.fg('模型', `<input class="bh-input" data-k="aiModel" value="${esc(ai.model)}" placeholder="模型名称">`)}${this.fg('API Key', `<input class="bh-input" type="password" data-k="aiApiKey" value="${esc(ai.apiKey)}" autocomplete="off">`)}${this.fg('分析提示词预设', `<select class="bh-input" data-ai-prompt-preset>${ai.promptPresets.map((p, i) => `<option value="${i}"${p === ai.prompt ? ' selected' : ''}>预设 ${i + 1}</option>`).join('')}</select><textarea class="bh-input" data-k="aiPrompt" rows="4" style="margin-top:6px">${esc(ai.prompt)}</textarea><button class="bh-adv-btn" type="button" data-ai-add-prompt style="margin-top:6px">把当前提示词保存为预设</button>`)}<button class="bh-adv-btn" type="button" data-ai-test>测试 API 联通</button><span data-ai-test-result class="bh-fg-help"></span>`
-
       const expBody =
         this.fg(
           '工作经验',
@@ -1660,8 +1596,6 @@ export class Panel {
         this.section('boss', 'Boss 状态', bossBody, bossOn ? `${bossOn} 项生效` : undefined) +
         this.section('other', '其他过滤', otherBody, otherOn ? `${otherOn} 项生效` : undefined) +
         this.section('targets', '工作目标', targetBody, undefined) +
-        this.section('rules', '规则优先级', rulesBody, undefined) +
-        this.section('ai', 'AI 分析', aiBody, undefined) +
         this.section('advanced', '高级设置', advBody, undefined, 'bh-sec-adv')
 
       this.wireSettings()
@@ -1951,10 +1885,6 @@ export class Panel {
       graduationYear: this.str('graduationYear').replace(/[^0-9]/g, '').slice(0, 4),
       employmentType: (this.str('targetEmployment') as AppConfig['jobTargets']['employmentType']) || 'any',
     }
-    cfg.rulePreferences.priorities = Object.fromEntries(Array.from(this.settingsEl.querySelectorAll<HTMLSelectElement>('[data-rule]')).map((el) => [el.dataset.rule!, el.value])) as AppConfig['rulePreferences']['priorities']
-    cfg.rulePreferences.minPreferredMatches = Math.max(0, Math.min(20, Number(this.str('minPreferredMatches')) || 0))
-    cfg.rulePreferences.unknownBehavior = (this.str('unknownBehavior') as AppConfig['rulePreferences']['unknownBehavior']) || 'review'
-    cfg.aiSettings = { apiBaseUrl: this.str('aiApiBaseUrl').trim(), model: this.str('aiModel').trim(), apiKey: this.str('aiApiKey').trim(), prompt: this.str('aiPrompt').trim(), promptPresets: cfg.aiSettings.promptPresets || [] }
 
     const contains = this.val('salaryContains')
     for (const [key, unit] of [['daySalary', 'day'], ['hourlySalary', 'hour'], ['monthlySalary', 'month']] as const) {

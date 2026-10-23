@@ -33,7 +33,6 @@ export default defineManifest({
     },
   ],
   // tabs/windows：点图标时定位并激活 zhipin 标签页、聚焦窗口
-  permissions: ['storage', 'notifications', 'tabs', 'permissions'],
-  optional_host_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
+  permissions: ['storage', 'notifications', 'tabs'],
   host_permissions: ['https://*.zhipin.com/*', 'https://zhipin.com/*'],
 })

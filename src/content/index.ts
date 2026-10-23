@@ -1,5 +1,5 @@
 import { loadConfig, onConfigChanged, saveConfig } from '../lib/config'
-import { passFilter, evaluateFilter } from '../lib/filter'
+import { passFilter } from '../lib/filter'
 import { classifyActiveText, classifyActiveTime } from '../lib/activity'
 import { DEFAULT_CONFIG } from '../lib/types'
 import type { AppConfig, BossActive, JobItem, TimeInterval } from '../lib/types'
@@ -66,7 +66,6 @@ let lastJobs: JobItem[] = []
 let usingApi = false
 // 通过筛选的职位（用于展示与投递）；lastJobs 保留为兼容别名
 let matchedJobs: JobItem[] = []
-let reviewJobs: JobItem[] = []
 // 临时显示全部（点了「显示全部」后为 true）：applyVisualFilter 尊重它，不再隐藏卡片；重新应用筛选时复位
 let showAllOverride = false
 // 投递失败、待用户手动重试的职位
@@ -74,17 +73,7 @@ let retryQueue: { job: JobItem; reason: string }[] = []
 
 function recomputeMatches() {
   const excluded = new Set(cfg.excluded || [])
-  const kept = new Set(cfg.kept || [])
-  const reviewed = new Set(cfg.reviewed || [])
-  matchedJobs = []
-  reviewJobs = []
-  for (const job of lastJobs) {
-    if (excluded.has(job.key)) continue
-    if (reviewed.has(job.key)) { reviewJobs.push(job); continue }
-    const report = evaluateFilter(job, cfg)
-    if (kept.has(job.key) || report.status === 'matched') matchedJobs.push(job)
-    else if (report.status === 'partial') reviewJobs.push(job)
-  }
+  matchedJobs = lastJobs.filter((job) => !excluded.has(job.key) && passFilter(job, cfg).pass)
 }
 // 网络hook(MAIN世界)捕获到的 BOSS 职位接口数据，用于真实薪资/Boss活跃
 const capturedNet: { url: string; data: any }[] = []
@@ -580,7 +569,7 @@ function applyVisualFilter() {
   if (!hasActiveFilter(cfg)) return lastJobs.length
 
   const shownCards = new Set<HTMLElement>()
-  for (const j of [...matchedJobs, ...reviewJobs]) {
+  for (const j of matchedJobs) {
     const el = cardBoxOf(j)
     if (el) shownCards.add(el)
   }
@@ -1933,7 +1922,6 @@ function init() {
     getConfig: () => cfg,
     getMatched: () => matchedJobs,
     getAllJobs: () => lastJobs,
-    getReview: () => reviewJobs,
     getRetry: () => retryQueue,
     getExcluded: () => new Set(cfg.excluded || []),
     toggleExclude: async (key: string) => {
@@ -1950,30 +1938,6 @@ function init() {
       // 面板顶部的「可投 N 个」和主按钮文案都依赖 setStats 的结果）。
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       if (panel.refreshPreview) panel.refreshPreview()
-    },
-    applyDecision: async (keys: string[], decision: 'keep' | 'exclude' | 'review') => {
-      const sets = { keep: new Set(cfg.kept), exclude: new Set(cfg.excluded), review: new Set(cfg.reviewed) }
-      for (const key of keys) {
-        sets.keep.delete(key); sets.exclude.delete(key); sets.review.delete(key)
-        if (decision === 'keep') sets.keep.add(key)
-        if (decision === 'exclude') sets.exclude.add(key)
-        if (decision === 'review') sets.review.add(key)
-      }
-      cfg.kept = [...sets.keep]; cfg.excluded = [...sets.exclude]; cfg.reviewed = [...sets.review]
-      await saveConfig(cfg)
-      recomputeMatches(); applyVisualFilter()
-      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
-      panel.log(`已将 ${keys.length} 个职位标记为${decision === 'keep' ? '保留' : decision === 'exclude' ? '排除' : '待复核'}`, 'ok')
-    },
-    onAnalyzeAi: async (job: JobItem) => {
-      const res = await chrome.runtime.sendMessage({ type: 'bh-ai-analyze', settings: cfg.aiSettings, job: { jobName: job.jobName, company: job.company, salaryDesc: job.salaryDesc, experience: job.experience, jobType: job.jobType, jobDescription: job.jobDescription, address: job.address, labels: job.jobLabels, skills: job.skills }, targets: cfg.jobTargets, rules: cfg.rulePreferences })
-      if (!res?.ok) throw new Error(res?.error || 'AI请求失败')
-      return res.text
-    },
-    onTestAi: async (settings) => {
-      const res = await chrome.runtime.sendMessage({ type: 'bh-ai-test', settings })
-      if (!res?.ok) throw new Error(res?.error || 'API连接失败')
-      return res.text || '连接成功'
     },
     onRetry: async (key) => {
       const item = retryQueue.find((r) => r.job.key === key)
