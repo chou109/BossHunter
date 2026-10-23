@@ -6,6 +6,7 @@ import type { AppConfig, BossActive, JobItem, TimeInterval } from '../lib/types'
 import { readGreeting, renderGreeting, signedHeaders, writeCustomGreetingVerified } from '../lib/greeting'
 import { decodeSalaryText, hasSalaryDigits } from '../lib/range'
 import { isProgressStale, loadProgress, saveProgress } from '../lib/progress'
+import type { DeliveryProgress } from '../lib/progress'
 import { RECOMMENDED_ADVANCED } from '../lib/safety'
 import type { GreetingState } from '../lib/greeting'
 import { Panel } from './panel'
@@ -1545,7 +1546,7 @@ async function restoreGreetingOnce() {
   }
 }
 
-async function runBatch() {
+async function runBatch(resumeProgress: DeliveryProgress | null = null) {
   if (running) return
   running = true
   stopRequested = false
@@ -1557,7 +1558,8 @@ async function runBatch() {
     // 额外加载更多页：只补接口页，不滚动。
     // 以前这里走 loadMoreJobs → scrollOnce，滚动会把卡片销毁重建，
     // 顺带把统计（以及刚补足的数量）打回 DOM 上那十几个。
-    if (cfg.schedule.loadPages > 0) {
+    // 续投时 matchedJobs 已经限定为原队列中的未完成职位；不能重新加载并重算全量候选。
+    if (!resumeProgress && cfg.schedule.loadPages > 0) {
       // 投递前要重新拉更多页：清掉"已到底"标记，否则本轮浏览时到底过就会跳过这一步
       pagerExhausted = false
       panel.setStatus('正在加载更多职位…')
@@ -1585,6 +1587,20 @@ async function runBatch() {
     if (!total) {
       panel.setStatus('没有可投递的职位')
       panel.log('候选职位都没有对应卡片，已中止。请先在页面上滚动一下让卡片渲染出来。', 'warn')
+      return
+    }
+
+    // 恢复时沿用原批次成功数与上限，避免页面跳转后从 0 重新计数。
+    const carriedSent = resumeProgress && Number.isFinite(resumeProgress.sent)
+      ? Math.max(0, resumeProgress.sent)
+      : 0
+    const deliveryLimit = resumeProgress && Number.isFinite(resumeProgress.limit)
+      ? resumeProgress.limit
+      : cfg.deliveryLimit
+    if (carriedSent >= deliveryLimit) {
+      panel.log(`已达到本批投递上限 ${deliveryLimit}，停止续投`, 'warn')
+      panel.setStatus(`已达到投递上限 ${deliveryLimit}`)
+      await saveProgress(null)
       return
     }
 
@@ -1616,17 +1632,22 @@ async function runBatch() {
       rounds.push(candidates.slice(i, i + cfg.schedule.roundSize))
     }
     // 落盘本批进度：万一页面被站点强制跳走（整页重载），重载后能接着投
-    await saveProgress({
+    await saveProgress(resumeProgress ? {
+      ...resumeProgress,
+      done: resumeProgress.done.slice(),
+      sent: carriedSent,
+      limit: deliveryLimit,
+    } : {
       batchId: Date.now(),
       queue: candidates.map((j) => j.key),
       done: [],
       sent: 0,
       startedAt: Date.now(),
-      limit: cfg.deliveryLimit,
+      limit: deliveryLimit,
     })
-    let sent = 0
+    let sent = carriedSent
     let processed = 0
-    const doneKeys: string[] = []
+    const doneKeys: string[] = resumeProgress ? resumeProgress.done.slice() : []
     /** 把当前进度写回 storage（每投完一条调一次，成本很低） */
     const persist = async () => {
       const p = await loadProgress()
@@ -1642,15 +1663,15 @@ async function runBatch() {
         panel.log('已手动停止', 'warn')
         break
       }
-      if (sent >= cfg.deliveryLimit) {
-        panel.log(`达到每日投递上限 ${cfg.deliveryLimit}，停止`, 'warn')
+      if (sent >= deliveryLimit) {
+        panel.log(`达到本批投递上限 ${deliveryLimit}，停止`, 'warn')
         break
       }
       const round = rounds[ri]
       panel.setStatus(`第 ${ri + 1}/${rounds.length} 轮（本轮 ${round.length} 个）`)
       for (const job of round) {
         await waitIfPaused()
-        if (stopRequested || sent >= cfg.deliveryLimit) break
+        if (stopRequested || sent >= deliveryLimit) break
         panel.setProgress(processed, total)
         // 招呼语已在整批开始前设置好，这里不再逐条改写（写接口有限流）
         const ok = await applyOne(job)
@@ -1671,7 +1692,7 @@ async function runBatch() {
       }
       if (abortedByNav) break
       // 内层 break 只跳出当前轮，这里必须再判一次，否则外层会继续跑完全部轮次
-      if (stopRequested || sent >= cfg.deliveryLimit) {
+      if (stopRequested || sent >= deliveryLimit) {
         // 区分两种停止原因，别把"达到上限"也写成"已手动停止"
         if (stopRequested) panel.log('已手动停止', 'warn')
         break
@@ -2119,7 +2140,7 @@ async function resumeIfInterrupted() {
       await saveProgress(null)
       return
     }
-    await runBatch()
+    await runBatch(p)
   } catch (e) {
     console.error('[BossHunter] 续投失败', e)
   }
