@@ -6,7 +6,12 @@ import { SAFETY, clampTo } from './safety'
 export async function loadConfig(): Promise<AppConfig> {
   const raw = await chrome.storage.local.get(STORAGE_KEY)
   const stored = raw[STORAGE_KEY] as Partial<AppConfig> | undefined
-  return normalizeConfig(deepMerge(DEFAULT_CONFIG, stored ?? {}))
+  const normalized = normalizeConfig(deepMerge(DEFAULT_CONFIG, stored ?? {}))
+  const legacy = stored as Record<string, unknown> | undefined
+  if (legacy && ['aiSettings', 'rulePreferences', 'kept', 'reviewed'].some((key) => key in legacy)) {
+    await chrome.storage.local.set({ [STORAGE_KEY]: normalized })
+  }
+  return normalized
 }
 
 /** 保存配置 */
