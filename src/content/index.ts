@@ -1,5 +1,5 @@
 import { loadConfig, onConfigChanged, saveConfig } from '../lib/config'
-import { passFilter } from '../lib/filter'
+import { passFilter, evaluateFilter } from '../lib/filter'
 import { classifyActiveText, classifyActiveTime } from '../lib/activity'
 import { DEFAULT_CONFIG } from '../lib/types'
 import type { AppConfig, BossActive, JobItem, TimeInterval } from '../lib/types'
@@ -66,10 +66,26 @@ let lastJobs: JobItem[] = []
 let usingApi = false
 // 通过筛选的职位（用于展示与投递）；lastJobs 保留为兼容别名
 let matchedJobs: JobItem[] = []
+let reviewJobs: JobItem[] = []
 // 临时显示全部（点了「显示全部」后为 true）：applyVisualFilter 尊重它，不再隐藏卡片；重新应用筛选时复位
 let showAllOverride = false
 // 投递失败、待用户手动重试的职位
 let retryQueue: { job: JobItem; reason: string }[] = []
+
+function recomputeMatches() {
+  const excluded = new Set(cfg.excluded || [])
+  const kept = new Set(cfg.kept || [])
+  const reviewed = new Set(cfg.reviewed || [])
+  matchedJobs = []
+  reviewJobs = []
+  for (const job of lastJobs) {
+    if (excluded.has(job.key)) continue
+    if (reviewed.has(job.key)) { reviewJobs.push(job); continue }
+    const report = evaluateFilter(job, cfg)
+    if (kept.has(job.key) || report.status === 'matched') matchedJobs.push(job)
+    else if (report.status === 'partial') reviewJobs.push(job)
+  }
+}
 // 网络hook(MAIN世界)捕获到的 BOSS 职位接口数据，用于真实薪资/Boss活跃
 const capturedNet: { url: string; data: any }[] = []
 let apiJobList: any[] = []
@@ -337,7 +353,7 @@ function rebuildJobsFromApi() {
     if (card) usedIds.add(cardJobId(card))
     return buildJob(raw, card)
   })
-  matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+  recomputeMatches()
   applyVisualFilter()
   panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
   panel?.setStatus(`页面上共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
@@ -476,6 +492,9 @@ function hasActiveFilter(cfg: AppConfig): boolean {
     f.goldHunter ||
     f.bossGoldMedalHr ||
     f.friendStatus
+    || cfg.jobTargets.locations.length > 0
+    || !!cfg.jobTargets.graduationYear
+    || cfg.jobTargets.employmentType !== 'any'
   )
 }
 
@@ -561,7 +580,7 @@ function applyVisualFilter() {
   if (!hasActiveFilter(cfg)) return lastJobs.length
 
   const shownCards = new Set<HTMLElement>()
-  for (const j of matchedJobs) {
+  for (const j of [...matchedJobs, ...reviewJobs]) {
     const el = cardBoxOf(j)
     if (el) shownCards.add(el)
   }
@@ -606,7 +625,7 @@ function watchList() {
   const refresh = () => {
     // 数据源已合并（接口池 + DOM 卡片）：站点自己增删卡片不会把补足到的数量冲掉
     lastJobs = collectJobs()
-    matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+    recomputeMatches()
     applyVisualFilter()
     panel.setStatus(`页面上共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
     panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
@@ -661,7 +680,7 @@ async function autoFillToTarget(why: string): Promise<boolean> {
     // 无论它是正常结束、提前 break 还是中途抛错，这里都必须重新把筛选结果藏回去，
     // 否则用户会看到"刚筛选完卡片全露出来了"，要等下一次 watchList 触发才恢复。
     lastJobs = collectJobs()
-    matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+    recomputeMatches()
     applyVisualFilter()
     panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
     panel.setStatus(`已自动加载：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
@@ -847,7 +866,7 @@ async function warmUpBossActive() {
   }
   panel?.setStatus('预热完成，重新筛选…')
   // 重新过滤（现在 activeLevel 已知，Boss 活跃过滤会真正生效）
-  matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+  recomputeMatches()
   applyVisualFilter()
   panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
 }
@@ -1360,7 +1379,7 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
       showAllCards()
       await scrollOnce()
       lastJobs = collectJobs()
-      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      recomputeMatches()
       applyVisualFilter()
       panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       panel?.setStatus(`加载中：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
@@ -1565,12 +1584,12 @@ async function runBatch(resumeProgress: DeliveryProgress | null = null) {
       panel.setStatus('正在加载更多职位…')
       await fetchMoreJobsForDelivery(cfg.schedule.loadPages)
       lastJobs = collectJobs()
-      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      recomputeMatches()
       applyVisualFilter()
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
     }
     const excludedSet = new Set(cfg.excluded || [])
-    const allMatched = matchedJobs.length ? matchedJobs : lastJobs.filter((j) => passFilter(j, cfg).pass)
+    const allMatched = matchedJobs
     // 必须是页面上真有卡片、且卡片还在文档里的职位：
     // 接口拉到的职位如果卡片还没渲染出来（element 为空），selectCard() 会直接 return，
     // 接着 readDetail() 读到的就是"上一个职位"的详情 —— 那一下会投错人。
@@ -1732,7 +1751,7 @@ function init() {
       // 手动刷新 = 用户主动想重来：清掉"已到底"标记，允许重新翻页（比如登录后 / 换了搜索词）
       pagerExhausted = false
       lastJobs = collectJobs()
-      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      recomputeMatches()
       applyVisualFilter()
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       panel.setStatus(`已刷新：共 ${lastJobs.length} 个，筛选后 ${matchedJobs.length} 个`)
@@ -1913,6 +1932,8 @@ function init() {
     },
     getConfig: () => cfg,
     getMatched: () => matchedJobs,
+    getAllJobs: () => lastJobs,
+    getReview: () => reviewJobs,
     getRetry: () => retryQueue,
     getExcluded: () => new Set(cfg.excluded || []),
     toggleExclude: async (key: string) => {
@@ -1920,6 +1941,8 @@ function init() {
       if (set.has(key)) set.delete(key)
       else set.add(key)
       cfg.excluded = Array.from(set)
+      recomputeMatches()
+      applyVisualFilter()
       await saveConfig(cfg)
       const name = lastJobs.find((j) => j.key === key)?.jobName || key
       panel.log(set.has(key) ? `已排除：${name}` : `已恢复：${name}`, 'info')
@@ -1927,6 +1950,30 @@ function init() {
       // 面板顶部的「可投 N 个」和主按钮文案都依赖 setStats 的结果）。
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       if (panel.refreshPreview) panel.refreshPreview()
+    },
+    applyDecision: async (keys: string[], decision: 'keep' | 'exclude' | 'review') => {
+      const sets = { keep: new Set(cfg.kept), exclude: new Set(cfg.excluded), review: new Set(cfg.reviewed) }
+      for (const key of keys) {
+        sets.keep.delete(key); sets.exclude.delete(key); sets.review.delete(key)
+        if (decision === 'keep') sets.keep.add(key)
+        if (decision === 'exclude') sets.exclude.add(key)
+        if (decision === 'review') sets.review.add(key)
+      }
+      cfg.kept = [...sets.keep]; cfg.excluded = [...sets.exclude]; cfg.reviewed = [...sets.review]
+      await saveConfig(cfg)
+      recomputeMatches(); applyVisualFilter()
+      panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
+      panel.log(`已将 ${keys.length} 个职位标记为${decision === 'keep' ? '保留' : decision === 'exclude' ? '排除' : '待复核'}`, 'ok')
+    },
+    onAnalyzeAi: async (job: JobItem) => {
+      const res = await chrome.runtime.sendMessage({ type: 'bh-ai-analyze', settings: cfg.aiSettings, job: { jobName: job.jobName, company: job.company, salaryDesc: job.salaryDesc, experience: job.experience, jobType: job.jobType, jobDescription: job.jobDescription, address: job.address, labels: job.jobLabels, skills: job.skills }, targets: cfg.jobTargets, rules: cfg.rulePreferences })
+      if (!res?.ok) throw new Error(res?.error || 'AI请求失败')
+      return res.text
+    },
+    onTestAi: async (settings) => {
+      const res = await chrome.runtime.sendMessage({ type: 'bh-ai-test', settings })
+      if (!res?.ok) throw new Error(res?.error || 'API连接失败')
+      return res.text || '连接成功'
     },
     onRetry: async (key) => {
       const item = retryQueue.find((r) => r.job.key === key)
@@ -1972,7 +2019,7 @@ function init() {
       showAllOverride = false
       panel.log(`已应用筛选（数据源：${usingApi ? '接口' : '卡片'}）`, 'ok')
       lastJobs = collectJobs()
-      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      recomputeMatches()
       // 预热 Boss 活跃：仅在设置里勾了「预热」才逐个打开详情读活跃（较慢）；否则只在批量投递时按活跃筛
       if (cfg.warmBossActive && cfg.filters.bossActive !== 'none' && matchedJobs.length) {
         panel.log('预热 Boss 活跃（逐个打开详情，较慢）…', 'info')
@@ -2055,7 +2102,7 @@ onConfigChanged((c) => {
   try {
     if (panel && lastJobs.length) {
       showAllOverride = false
-      matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass)
+      recomputeMatches()
       applyVisualFilter()
       panel.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       panel.setStatus(`配置已更新：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
@@ -2134,7 +2181,8 @@ async function resumeIfInterrupted() {
     // 把剩下的职位恢复成当前候选，直接跑 runBatch
     lastJobs = collectJobs()
     const remainSet = new Set(remaining)
-    matchedJobs = lastJobs.filter((j) => passFilter(j, cfg).pass && remainSet.has(j.key) && j.element)
+    recomputeMatches()
+    matchedJobs = matchedJobs.filter((j) => remainSet.has(j.key) && j.element)
     if (!matchedJobs.length) {
       panel.log('中断的职位在当前页面已找不到卡片，放弃续投（可点「多找一些」加载后再试）', 'warn')
       await saveProgress(null)

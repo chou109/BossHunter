@@ -83,6 +83,37 @@ export interface FilterConfig {
   friendStatus: boolean
 }
 
+export type RuleKey =
+  | 'jobTitle' | 'company' | 'tags' | 'excludeKeywords'
+  | 'daySalary' | 'monthlySalary' | 'hourlySalary' | 'experience'
+  | 'employmentType' | 'location' | 'graduationYear'
+  | 'bossActive' | 'bossOnlineOnly' | 'goldHunter' | 'bossGoldMedalHr'
+  | 'friendStatus' | 'excludeNegotiable'
+
+export type RulePriority = 'required' | 'preferred'
+
+export interface RulePreferences {
+  priorities: Partial<Record<RuleKey, RulePriority>>
+  minPreferredMatches: number
+  unknownBehavior: 'review' | 'pass' | 'exclude'
+}
+
+export interface JobTargetSettings {
+  /** 用户自定义地点关键词；空列表表示不限 */
+  locations: string[]
+  /** 毕业届别，如 2027；空串表示不限 */
+  graduationYear: string
+  employmentType: 'any' | 'fulltime' | 'intern' | 'parttime'
+}
+
+export interface AiSettings {
+  apiBaseUrl: string
+  model: string
+  apiKey: string
+  prompt: string
+  promptPresets: string[]
+}
+
 /** 时间间隔：fixed=固定值；range=在 [min,max] 区间随机 */
 export interface TimeInterval {
   mode: 'fixed' | 'range'
@@ -114,8 +145,15 @@ export interface AppConfig {
   targetCount: number
   schedule: BatchSchedule
   filters: FilterConfig
+  rulePreferences: RulePreferences
+  jobTargets: JobTargetSettings
+  aiSettings: AiSettings
   /** 预览里被手动排除的职位 key，批量发送时跳过 */
   excluded: string[]
+  /** 手动保留的部分匹配职位 key */
+  kept: string[]
+  /** 手动标记为待复核的职位 key */
+  reviewed: string[]
   /** 预热 Boss 活跃：应用筛选时逐个打开详情读取活跃状态，让列表统计也按 Boss 活跃过滤（较慢） */
   warmBossActive: boolean
   /**
@@ -192,6 +230,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     itemInterval: { mode: 'fixed', fixed: 5000, min: 3000, max: 12000 },
     loadPages: 3,
   },
+  rulePreferences: { priorities: {}, minPreferredMatches: 1, unknownBehavior: 'review' },
+  jobTargets: { locations: [], graduationYear: '', employmentType: 'any' },
+  aiSettings: { apiBaseUrl: '', model: '', apiKey: '', prompt: '请根据岗位信息判断它是否适合用户的求职条件。指出匹配项、疑点和缺失信息，并给出保留/排除/待复核建议。不要编造信息。', promptPresets: ['请根据岗位信息判断它是否适合用户的求职条件。指出匹配项、疑点和缺失信息，并给出保留/排除/待复核建议。不要编造信息。', '重点判断岗位职责、任职要求和职位名称是否一致；说明可能存在的歧义与风险，不要仅凭公司或行业名称推断。'] },
   filters: {
     jobTitle: { enable: false, include: true, value: [] },
     company: { enable: false, include: true, value: [] },
@@ -210,6 +251,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     friendStatus: false,
   },
   excluded: [],
+  kept: [],
+  reviewed: [],
   warmBossActive: false,
   advancedDefaults: null,
 }

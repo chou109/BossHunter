@@ -1,7 +1,7 @@
 import { parseRange, salaryUnit } from './range'
 import { activeWithin } from './activity'
 import { EXPERIENCE_LABELS } from './types'
-import type { AppConfig, ExperienceFilter, JobItem, KeywordFilter, RangeSetting } from './types'
+import type { AppConfig, ExperienceFilter, JobItem, KeywordFilter, RangeSetting, RuleKey, RulePriority } from './types'
 
 export interface FilterResult {
   pass: boolean
@@ -159,4 +159,140 @@ export function passFilter(job: JobItem, cfg: AppConfig): FilterResult {
   }
 
   return { pass: true, reason: '' }
+}
+
+export interface RuleCheck {
+  key: RuleKey
+  label: string
+  priority: RulePriority
+  status: 'pass' | 'fail' | 'unknown'
+  reason: string
+}
+
+export interface FilterReport {
+  status: 'matched' | 'partial' | 'excluded'
+  reason: string
+  checks: RuleCheck[]
+  preferredMatched: number
+  preferredTotal: number
+}
+
+/** Evaluate criteria separately so one failure does not hide the other reasons. */
+export function evaluateFilter(job: JobItem, cfg: AppConfig): FilterReport {
+  const f = cfg.filters
+  const p = cfg.rulePreferences
+  const emptyRange = (): RangeSetting => ({ enable: false, min: 0, max: 0, strict: false, contains: false })
+  const emptyKeyword = (): KeywordFilter => ({ enable: false, include: true, value: [] })
+  const checks: RuleCheck[] = []
+  const active = (key: RuleKey, enabled: boolean, label: string, status: RuleCheck['status'], reason = '') => {
+    if (!enabled) return
+    checks.push({ key, label, status, reason, priority: p?.priorities?.[key] || 'required' })
+  }
+  const runSolo = (key: RuleKey): FilterResult => {
+    const filters: AppConfig['filters'] = {
+      ...f,
+      jobTitle: emptyKeyword(), company: emptyKeyword(), tags: emptyKeyword(), excludeKeywords: [],
+      daySalary: emptyRange(), monthlySalary: emptyRange(), hourlySalary: emptyRange(),
+      excludeNegotiable: false, bossActive: 'none' as const, experience: 'none' as const,
+      onlyIntern: false, bossOnlineOnly: false, goldHunter: false, bossGoldMedalHr: false, friendStatus: false,
+    }
+    if (key === 'jobTitle' || key === 'company' || key === 'tags') filters[key] = { ...f[key] }
+    else if (key === 'excludeKeywords') filters.excludeKeywords = f.excludeKeywords
+    else if (key === 'daySalary' || key === 'monthlySalary' || key === 'hourlySalary') filters[key] = { ...f[key] }
+    else if (key === 'experience') filters.experience = f.experience
+    else if (key === 'bossActive') filters.bossActive = f.bossActive
+    else if (key === 'excludeNegotiable') filters.excludeNegotiable = f.excludeNegotiable
+    else if (key === 'employmentType') filters.onlyIntern = f.onlyIntern
+    else if (key === 'bossOnlineOnly') filters.bossOnlineOnly = f.bossOnlineOnly
+    else if (key === 'goldHunter') filters.goldHunter = f.goldHunter
+    else if (key === 'bossGoldMedalHr') filters.bossGoldMedalHr = f.bossGoldMedalHr
+    else if (key === 'friendStatus') filters.friendStatus = f.friendStatus
+    return passFilter(job, { ...cfg, filters, jobTargets: { locations: [], graduationYear: '', employmentType: 'any' } })
+  }
+
+  const addSolo = (key: RuleKey, enabled: boolean, label: string, unknown = false) => {
+    if (!enabled) return
+    const result = runSolo(key)
+    active(key, enabled, label, unknown ? 'unknown' : result.pass ? 'pass' : 'fail', result.reason)
+  }
+  addSolo('jobTitle', f.jobTitle.enable && f.jobTitle.value.length > 0, '职位关键词', !job.jobName)
+  addSolo('company', f.company.enable && f.company.value.length > 0, '公司关键词', !job.company)
+  addSolo('tags', f.tags.enable && f.tags.value.length > 0, '标签 / 技能', !(job.jobLabels.length || job.skills.length))
+  addSolo('excludeKeywords', f.excludeKeywords.length > 0, '排除关键词', !(job.jobName || job.company || job.jobDescription || job.jobLabels.length || job.skills.length))
+  addSolo('experience', f.experience !== 'none', '工作经验', !job.experience)
+  addSolo('excludeNegotiable', f.excludeNegotiable, '排除面议', !job.salaryDesc)
+  addSolo('bossActive', f.bossActive !== 'none', 'Boss 活跃度', job.activeLevel === 'none')
+  addSolo('bossOnlineOnly', f.bossOnlineOnly, 'Boss 在线')
+  addSolo('goldHunter', f.goldHunter, '猎头过滤')
+  addSolo('bossGoldMedalHr', f.bossGoldMedalHr, '金牌面试官')
+  addSolo('friendStatus', f.friendStatus, '已沟通状态')
+
+  for (const [key, setting, label, unit] of [
+    ['daySalary', f.daySalary, '日薪', 'D'],
+    ['monthlySalary', f.monthlySalary, '月薪', 'K'],
+    ['hourlySalary', f.hourlySalary, '时薪', 'H'],
+  ] as const) {
+    if (!setting.enable || (setting.min <= 0 && setting.max <= 0)) continue
+    const actualUnit = salaryUnit(job.salaryDesc)
+    const relevant = actualUnit === unit || (key === 'monthlySalary' && actualUnit === 'M')
+    if (!relevant) {
+      active(key, true, label, actualUnit ? 'pass' : 'unknown', '')
+      continue
+    }
+    const result = runSolo(key)
+    active(key, true, label, !parseRange(job.salaryDesc) ? 'unknown' : result.pass ? 'pass' : 'fail', result.reason)
+  }
+
+  const targets = cfg.jobTargets
+  if (targets.employmentType !== 'any' || f.onlyIntern) {
+    const type = employmentTypeForRule(job)
+    const desired = f.onlyIntern ? 'intern' : targets.employmentType
+    active('employmentType', true, '工作性质', type === 'unknown' ? 'unknown' : type === desired ? 'pass' : 'fail', type !== desired ? `工作性质不匹配: ${type}` : '')
+  }
+  if (targets.locations.length) {
+    const place = `${job.address || ''} ${job.raw?.cityName || ''}`.trim().toLowerCase()
+    const status = !place ? 'unknown' : targets.locations.some((v) => place.includes(v.toLowerCase())) ? 'pass' : 'fail'
+    active('location', true, '工作地点', status, status === 'fail' ? `地点不匹配: ${job.address || '未知'}` : '')
+  }
+  if (targets.graduationYear) {
+    const text = `${job.jobDescription || ''} ${JSON.stringify(job.raw || {})}`
+    const y = targets.graduationYear
+    const explicit = new RegExp(`${y}届|${y}年毕业|毕业.{0,8}${y}`).test(text)
+    const otherYear = /20\d{2}届|20\d{2}年毕业|毕业年份|毕业时间/.test(text)
+    const status = explicit ? 'pass' : otherYear ? 'fail' : 'unknown'
+    active('graduationYear', true, '毕业届别', status, status === 'fail' ? `毕业届别不匹配: 目标 ${y}` : '')
+  }
+
+  const requiredFailure = checks.filter((c) => c.priority === 'required' && c.status === 'fail')
+  const preferred = checks.filter((c) => c.priority === 'preferred')
+  const unknownBehavior = p?.unknownBehavior || 'review'
+  const preferredMatched = preferred.filter((c) => c.status === 'pass' || (unknownBehavior === 'pass' && c.status === 'unknown')).length
+  const preferredTotal = preferred.length
+  const requiredUnknown = checks.filter((c) => c.priority === 'required' && c.status === 'unknown')
+  const unknownExcluded = unknownBehavior === 'exclude' && checks.some((c) => c.status === 'unknown')
+  if (requiredFailure.length || unknownExcluded) {
+    const reason = requiredFailure.map((c) => c.reason || `${c.label}不符合`)
+    if (unknownExcluded) reason.push(...checks.filter((c) => c.status === 'unknown').map((c) => `${c.label}信息缺失`))
+    return { status: 'excluded', reason: reason.join('；'), checks, preferredMatched, preferredTotal }
+  }
+
+  const minPreferred = Math.min(preferredTotal, Math.max(0, p?.minPreferredMatches ?? 1))
+  const preferredUnknown = preferred.some((c) => c.status === 'unknown')
+  const needsReview = (unknownBehavior === 'review' && (requiredUnknown.length > 0 || preferredUnknown)) || preferredMatched < minPreferred
+  if (needsReview) {
+    return {
+      status: 'partial',
+      reason: [...requiredUnknown.map((c) => `${c.label}信息不足`), ...preferred.filter((c) => c.status !== 'pass').map((c) => c.reason || `${c.label}未满足`)].join('；') || `优选条件命中 ${preferredMatched}/${preferredTotal}`,
+      checks, preferredMatched, preferredTotal,
+    }
+  }
+  return { status: 'matched', reason: '', checks, preferredMatched, preferredTotal }
+}
+
+function employmentTypeForRule(job: JobItem): 'fulltime' | 'intern' | 'parttime' | 'unknown' {
+  const text = `${job.jobName} ${job.experience} ${job.jobDescription || ''} ${(job.jobLabels || []).join(' ')}`
+  if (/兼职|小时工|临时工/.test(text)) return 'parttime'
+  if (job.jobType === 4 || internVerdict(job) === 'intern') return 'intern'
+  if (job.jobType === 1 || /全职|正式岗位/.test(text) || internVerdict(job) === 'fulltime') return 'fulltime'
+  return 'unknown'
 }
