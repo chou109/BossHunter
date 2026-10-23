@@ -74,6 +74,42 @@ chrome.action.onClicked.addListener((tab) => {
 
 // 接收 content 脚本消息并展示系统通知
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'bh-ai-test' || message?.type === 'bh-ai-analyze') {
+    void (async () => {
+      try {
+        const s = message.settings || {}
+        const base = String(s.apiBaseUrl || '').trim().replace(/\/+$/, '')
+        const model = String(s.model || '').trim()
+        const key = String(s.apiKey || '').trim()
+        if (!base || !model || !key) throw new Error('请填写 API 地址、模型和 API Key')
+        const parsed = new URL(base)
+        if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname))) throw new Error('API 地址必须使用 HTTPS（本机 localhost 可用 HTTP）')
+        const originPattern = `${parsed.origin}/*`
+        const hasPermission = await chrome.permissions.contains({ origins: [originPattern] })
+        if (!hasPermission) {
+          const granted = await chrome.permissions.request({ origins: [originPattern] })
+          if (!granted) throw new Error('未授予该 API 域名访问权限')
+        }
+        const endpoint = /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`
+        const userContent = message.type === 'bh-ai-test'
+          ? '仅回复：连接成功'
+          : `${String(s.prompt || '')}\n\n用户条件：${JSON.stringify(message.targets || {})}\n筛选规则：${JSON.stringify(message.rules || {})}\n岗位信息：${JSON.stringify(message.job || {})}`
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: userContent }], temperature: 0.2 }),
+        })
+        if (!response.ok) throw new Error(`API 返回 HTTP ${response.status}`)
+        const data = await response.json()
+        const text = data?.choices?.[0]?.message?.content
+        if (typeof text !== 'string' || !text.trim()) throw new Error('API 响应中没有分析内容')
+        sendResponse({ ok: true, text: text.trim() })
+      } catch (error) {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : 'AI请求失败' })
+      }
+    })()
+    return true
+  }
   if (message?.type === 'notify') {
     chrome.notifications.create({
       type: 'basic',

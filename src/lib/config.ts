@@ -88,9 +88,33 @@ export function normalizeConfig(input: AppConfig): AppConfig {
   }
 
   cfg.excluded = toStringArray(cfg.excluded)
+  cfg.kept = toStringArray(cfg.kept)
+  cfg.reviewed = toStringArray(cfg.reviewed)
   cfg.deliveryLimit = clampTo(toNum(cfg.deliveryLimit, DEFAULT_CONFIG.deliveryLimit), SAFETY.deliveryLimit)
   cfg.targetCount = clampTo(toNum(cfg.targetCount, DEFAULT_CONFIG.targetCount), SAFETY.targetCount)
   cfg.warmBossActive = !!cfg.warmBossActive
+  const targets = cfg.jobTargets && typeof cfg.jobTargets === 'object' ? cfg.jobTargets : {}
+  cfg.jobTargets = {
+    locations: toStringArray(targets.locations),
+    graduationYear: typeof targets.graduationYear === 'string' ? targets.graduationYear.replace(/[^0-9]/g, '').slice(0, 4) : '',
+    employmentType: ['any', 'fulltime', 'intern', 'parttime'].includes(targets.employmentType) ? targets.employmentType : 'any',
+  }
+  const rp = cfg.rulePreferences && typeof cfg.rulePreferences === 'object' ? cfg.rulePreferences : {}
+  const priorities = rp.priorities && typeof rp.priorities === 'object' ? rp.priorities : {}
+  const validRules = ['jobTitle', 'company', 'tags', 'excludeKeywords', 'daySalary', 'monthlySalary', 'hourlySalary', 'experience', 'employmentType', 'location', 'graduationYear', 'bossActive', 'bossOnlineOnly', 'goldHunter', 'bossGoldMedalHr', 'friendStatus', 'excludeNegotiable']
+  cfg.rulePreferences = {
+    priorities: Object.fromEntries(validRules.filter((k) => priorities[k] === 'required' || priorities[k] === 'preferred').map((k) => [k, priorities[k]])),
+    minPreferredMatches: Math.max(0, Math.min(20, Math.round(toNum(rp.minPreferredMatches, 1)))),
+    unknownBehavior: ['review', 'pass', 'exclude'].includes(rp.unknownBehavior) ? rp.unknownBehavior : 'review',
+  }
+  const ai = cfg.aiSettings && typeof cfg.aiSettings === 'object' ? cfg.aiSettings : {}
+  cfg.aiSettings = {
+    apiBaseUrl: typeof ai.apiBaseUrl === 'string' ? ai.apiBaseUrl : '',
+    model: typeof ai.model === 'string' ? ai.model : '',
+    apiKey: typeof ai.apiKey === 'string' ? ai.apiKey : '',
+    prompt: typeof ai.prompt === 'string' ? ai.prompt : DEFAULT_CONFIG.aiSettings.prompt,
+    promptPresets: toStringArray(ai.promptPresets).length ? toStringArray(ai.promptPresets) : DEFAULT_CONFIG.aiSettings.promptPresets,
+  }
   cfg.enabled = cfg.enabled !== false
   cfg.batchApply = cfg.batchApply !== false
   cfg.autoGreet = cfg.autoGreet !== false
