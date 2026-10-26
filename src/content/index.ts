@@ -506,7 +506,11 @@ function activeFilterSummary(cfg: AppConfig): string[] {
   kw('company', '公司名')
   kw('tags', '标签/技能')
   const rg = (k: 'daySalary' | 'monthlySalary' | 'hourlySalary', label: string) => {
-    if (f[k].enable) out.push(`${label}: ${f[k].min > 0 || f[k].max > 0 ? `${f[k].min}~${f[k].max}` : '(区间为空)'}`)
+    if (f[k].enable) {
+      const min = f[k].min > 0 ? f[k].min : '不限'
+      const max = f[k].max > 0 ? f[k].max : '不限'
+      out.push(`${label}: ${min}~${max}`)
+    }
   }
   rg('daySalary', '日薪')
   rg('hourlySalary', '时薪')

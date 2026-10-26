@@ -68,7 +68,8 @@ function matchExperience(expText: string, option: ExperienceFilter): FilterResul
   // 用文案特征判断，兼容接口字段 jobExperience（如 "在校/应届"、"1-3年"、"经验不限" 等）
   const map: Record<string, RegExp> = {
     campus: /在校|学生|在校\/应届|在校生/,
-    fresh: /应届/,
+    // 「经验不限」没有经验门槛，应届候选人也可以申请；不能仅按标签完全相等筛除。
+    fresh: /应届|经验不限|不限/,
     noLimit: /经验不限|不限/,
     under1y: /1年以内|应届/,
     '1to3y': /1-3年|1~3年/,
@@ -91,8 +92,9 @@ function matchExperience(expText: string, option: ExperienceFilter): FilterResul
  */
 function internVerdict(job: JobItem): 'intern' | 'fulltime' | 'unknown' {
   const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')}`
-  // 明确的实习线索
-  if (/实习|intern|实习生|在校|应届/i.test(text)) return 'intern'
+  // 「应届/在校」描述候选人的经验或身份，不代表岗位性质是实习；
+  // 只有明确的实习标识或接口类型才能判为实习，避免误删校招全职岗位。
+  if (/实习|intern/i.test(text)) return 'intern'
   if (job.jobType === 4) return 'intern'
   // 明确的全职线索：有经验年限要求 → 基本可以断定不是实习
   if (/\d+\s*-\s*\d+\s*年|\d+年以上|5-10年|10年以上/.test(job.experience || '')) return 'fulltime'
