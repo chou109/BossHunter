@@ -1380,7 +1380,7 @@ export class Panel {
     const opts = bandsOf(unit)
       .map((o) => `<option value="${o.value}"${cur === o.value ? ' selected' : ''}>${o.label}</option>`)
       .join('')
-    return `<select class="bh-input${on}" data-k="${key}">${opts}<option value="custom"${cur === 'custom' ? ' selected' : ''}>自定义</option></select><div style="display:flex;gap:6px;margin-top:5px"><input class="bh-input" type="number" min="0" data-k="${key}-min" value="${r.min || 0}" placeholder="最低"><input class="bh-input" type="number" min="0" data-k="${key}-max" value="${r.max || 0}" placeholder="最高"></div>`
+    return `<select class="bh-input${on}" data-k="${key}">${opts}<option value="custom"${cur === 'custom' ? ' selected' : ''}>自定义</option></select><div style="display:flex;gap:6px;margin-top:5px"><input class="bh-input" type="number" min="0" data-k="${key}-min" value="${r.min || ''}" placeholder="最低不限"><input class="bh-input" type="number" min="0" data-k="${key}-max" value="${r.max || ''}" placeholder="最高不限"></div>`
   }
 
   /**
