@@ -1404,14 +1404,22 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
     panel.log(`页面已有 ${cardCount} 张卡片，已达池子上限，不再滚动加载`, 'info')
     return
   }
-  // 自动模式：一直滚到「页面职位数」不再增长为止，不因为"符合数不涨"就停。
-  // 以前按匹配数判断，筛选命中率低时会很早就停，用户必须反复手动点「多找一些」。
-  const maxScroll = targetCount > 0 ? 80 : pages > 0 ? pages : 1
+  // 自动模式：尽量往下加载，但必须有明确上限，否则会长时间空转（看起来像死循环）。
+  // 停止条件（任一满足）：卡片数连续两轮不增长 / 连续 6 轮没有新的符合职位 /
+  // 达到约 450 条池子上限 / 超过 12 轮 / 超过 90 秒 / 用户点终止。
+  const maxScroll = targetCount > 0 ? 12 : pages > 0 ? Math.min(pages, 12) : 1
+  const deadline = Date.now() + 90_000
   let stagnant = 0
+  let stagnantMatched = 0
+  let lastMatchedCount = matchedJobs.length
   try {
     for (let i = 0; i < maxScroll; i++) {
       if (stopRequested) {
         panel.log('已停止加载更多', 'warn')
+        break
+      }
+      if (Date.now() > deadline) {
+        panel.log('滚动加载已达 90 秒上限，先停在这里（可点「多找一些」继续）', 'warn')
         break
       }
       const beforeDom = readCards().length
@@ -1435,6 +1443,17 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
         stagnant = 0
         scrollExhausted = false
         panel.log(`已加载更多：职位 ${beforeDom} → ${afterDom}，符合 ${matchedJobs.length} 个`, 'info')
+      }
+      // 符合数长期不涨 → 继续滚也大概率白滚，停下来让用户决定
+      if (matchedJobs.length <= lastMatchedCount) {
+        stagnantMatched++
+      } else {
+        stagnantMatched = 0
+      }
+      lastMatchedCount = Math.max(lastMatchedCount, matchedJobs.length)
+      if (stagnantMatched >= 6) {
+        panel.log('连续 6 轮没有新增符合条件的职位，停止滚动（可点「多找一些」继续）', 'info')
+        break
       }
       if (afterDom >= 450) {
         scrollExhausted = true
@@ -1503,7 +1522,7 @@ async function scrollOnce() {
 
   // 兜底 wheel（不改变当前位置），再给站点一点渲染时间
   dispatchWheel()
-  await sleepAtLeast(1200)
+  await sleepAtLeast(800)
 }
 
 function scrollHeightOf(useWindow: boolean, c: HTMLElement): number {

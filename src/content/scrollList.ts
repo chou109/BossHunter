@@ -47,7 +47,11 @@ export async function scrollDownUntilNew(s: Scroller, o: ScrollDownOptions): Pro
   const before = o.getCount()
   const startPos = s.getPos()
   let pos = startPos
-  const maxSteps = o.maxSteps ?? 40
+  const maxSteps = o.maxSteps ?? 20
+  // 到底后只做有限次「派发 wheel 等待」：以前固定跑满 40 轮，
+  // 每轮 320ms ≈ 13 秒纯空转，外层再叠加多轮就像死循环。
+  let idle = 0
+  const MAX_IDLE = 5
 
   for (let guard = 0; guard < maxSteps; guard++) {
     const bottom = Math.max(s.getTotal() - s.getClient(), 0)
@@ -55,14 +59,17 @@ export async function scrollDownUntilNew(s: Scroller, o: ScrollDownOptions): Pro
       // 还没到底：往下推进一屏（但不超过底部）
       pos = Math.min(pos + o.stepPx, bottom)
       s.setPos(pos)
+      idle = 0
     } else {
       // 已在底部：只派发 wheel 被动等待站点加载，不动位置
       s.wheel()
+      idle++
     }
     await o.sleep(o.settleMs)
     if (o.getCount() > before) {
       return { grew: true, moved: s.getPos() !== startPos }
     }
+    if (idle >= MAX_IDLE) break
   }
   return { grew: false, moved: s.getPos() !== startPos }
 }
