@@ -85,6 +85,10 @@ let fillExhaustedAt = 0
  * 任何会让结果集变化（应用筛选 / 手动刷新 / 查看更过）时复位为 false。
  */
 let pagerExhausted = false
+/** 滚动加载是否已判定到底。接口到底（pagerExhausted）不代表页面滚不动，两者必须分开 */
+let scrollExhausted = false
+/** autoFillToTarget 重入保护，避免滚动过程中卡片变化又触发一轮补足 */
+let autoFilling = false
 window.addEventListener('message', (e) => {
   if (e.data?.type === 'bh-net') {
     capturedNet.push(e.data)
@@ -630,7 +634,7 @@ function watchList() {
     // 开了筛选时结果会被压少，滚出新卡片就顺手补回目标值。
     // 没开筛选时所有卡片都通过，不需要替用户自动滚动页面。
     // pagerExhausted：接口/滚动都已判定到底，别再每次卡片变动都重拉（否则日志会每 2 秒刷一遍填空转）。
-    if (!pagerExhausted && hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
+    if (!scrollExhausted && hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
       clearTimeout((watchList as any).__fill)
       ;(watchList as any).__fill = setTimeout(() => {
         // 上一轮补足已经"到底"过，且页面上卡片没变多，就别再滚一次（避免反复空转）
@@ -665,15 +669,18 @@ function watchList() {
  *  三个入口（刷新 / 保存并筛选 / 站点新增卡片）共用同一套收尾逻辑。 */
 async function autoFillToTarget(why: string): Promise<boolean> {
   if (!matchingAutoFillAllowed()) return false
-  if (pagerExhausted) return false
+  if (autoFilling) return false
+  if (scrollExhausted) return false
   const total = cfg.targetCount || 20
   if (matchedJobs.length >= total) return false
   const before = matchedJobs.length
   const cardsBefore = readCards().length
   panel.setStatus(`找到 ${before} 个符合条件，尝试加载到 ${total} 个…（${why}）`)
+  autoFilling = true
   try {
     await loadMoreJobs(20, total)
   } finally {
+    autoFilling = false
     // loadMoreJobs 内部会 showAllCards() 把隐藏全部还原（为了制造滚动空间）。
     // 无论它是正常结束、提前 break 还是中途抛错，这里都必须重新把筛选结果藏回去，
     // 否则用户会看到"刚筛选完卡片全露出来了"，要等下一次 watchList 触发才恢复。
@@ -1392,15 +1399,22 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
   //    但只有「页面上卡片不够多」时才值得滚 —— 页面卡片本来就有很多、
   //    只是被筛选藏起来了，滚动解决不了问题，反而要 showAllCards() 把界面弄乱。
   const cardCount = readCards().length
-  if (cardCount >= Math.max(targetCount || 20, 30)) {
-    panel.log(`页面已有 ${cardCount} 张卡片，接口也没更多数据，不再滚动加载`, 'info')
+  // BOSS 单个列表池上限约 450 条；到了就没必要再滚
+  if (cardCount >= 450) {
+    panel.log(`页面已有 ${cardCount} 张卡片，已达池子上限，不再滚动加载`, 'info')
     return
   }
-  const maxScroll = pages > 0 ? pages : targetCount > 0 ? 30 : 1
-  let lastMatched = -1
+  // 自动模式：一直滚到「页面职位数」不再增长为止，不因为"符合数不涨"就停。
+  // 以前按匹配数判断，筛选命中率低时会很早就停，用户必须反复手动点「多找一些」。
+  const maxScroll = targetCount > 0 ? 80 : pages > 0 ? pages : 1
+  let stagnant = 0
   try {
-    for (let i = 0; i < maxScroll && (!targetCount || matchedJobs.length < targetCount); i++) {
-      const beforeDom = document.querySelectorAll(CARD_SELECTORS).length
+    for (let i = 0; i < maxScroll; i++) {
+      if (stopRequested) {
+        panel.log('已停止加载更多', 'warn')
+        break
+      }
+      const beforeDom = readCards().length
       showAllCards()
       await scrollOnce()
       lastJobs = collectJobs()
@@ -1408,18 +1422,25 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
       applyVisualFilter()
       panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
       panel?.setStatus(`加载中：共 ${lastJobs.length} 个职位，符合 ${matchedJobs.length} 个`)
-      const afterDom = document.querySelectorAll(CARD_SELECTORS).length
+      const afterDom = readCards().length
       if (afterDom <= beforeDom) {
-        panel.log(`没有更多可加载的职位了（卡片 ${beforeDom} → ${afterDom}，未新增）`, 'info')
+        stagnant++
+        panel.log(`本轮无新增（卡片 ${beforeDom} → ${afterDom}），再试一次…`, 'info')
+        if (stagnant >= 2) {
+          scrollExhausted = true
+          panel.log(`连续两轮无新增，判定已到底（共 ${afterDom} 张卡片）`, 'info')
+          break
+        }
+      } else {
+        stagnant = 0
+        scrollExhausted = false
+        panel.log(`已加载更多：职位 ${beforeDom} → ${afterDom}，符合 ${matchedJobs.length} 个`, 'info')
+      }
+      if (afterDom >= 450) {
+        scrollExhausted = true
+        panel.log('已达池子上限（约 450 条），停止加载', 'info')
         break
       }
-      // 连续两轮匹配数不再增长，视为到底，避免死循环
-      if (matchedJobs.length === lastMatched) {
-        panel.log('匹配数不再增长，停止加载', 'info')
-        break
-      }
-      lastMatched = matchedJobs.length
-      panel.log(`已加载更多：职位 ${beforeDom} → ${afterDom}，符合 ${matchedJobs.length} 个`, 'info')
     }
   } finally {
     // 循环里每轮都会 showAllCards()，退出时必须按当前筛选重新隐藏，
@@ -1718,6 +1739,7 @@ async function runBatch(resumeProgress: DeliveryProgress | null = null) {
     if (!resumeProgress && cfg.schedule.loadPages > 0) {
       // 投递前要重新拉更多页：清掉"已到底"标记，否则本轮浏览时到底过就会跳过这一步
       pagerExhausted = false
+      scrollExhausted = false
       panel.setStatus('正在加载更多职位…')
       await fetchMoreJobsForDelivery(cfg.schedule.loadPages)
       lastJobs = collectJobs()
@@ -1923,6 +1945,7 @@ function init() {
       if (markStaleIfNeeded()) return
       // 手动刷新 = 用户主动想重来：清掉"已到底"标记，允许重新翻页（比如登录后 / 换了搜索词）
       pagerExhausted = false
+      scrollExhausted = false
       lastJobs = collectJobs()
       recomputeMatches()
       applyVisualFilter()
@@ -1975,6 +1998,7 @@ function init() {
       if (markStaleIfNeeded()) return
       // 「查看更多」= 用户主动再多要点：清掉"已到底"，重试接口翻页
       pagerExhausted = false
+      scrollExhausted = false
       // 一直滚到配置的目标数量为止；够数才停，不够就继续滚（到底则提示）
       const total = cfg.targetCount || 20
       panel.setStatus(`正在加载更多（目标 ${total} 个，当前 ${matchedJobs.length}）…`)
@@ -2163,6 +2187,7 @@ function init() {
       await saveConfig(c)
       // 应用筛选改变了结果集：清掉"已到底"，让自动补足重新评估
       pagerExhausted = false
+      scrollExhausted = false
       // 重新应用筛选：结束「显示全部」的临时状态，恢复按条件隐藏
       showAllOverride = false
       panel.log(`已应用筛选（数据源：${usingApi ? '接口' : '卡片'}）`, 'ok')
