@@ -759,8 +759,10 @@ function readDetail() {
   const bossName = q(D.bossName)
   const bossAttr = q(D.bossAttr)
   const address = q(D.address)
-  // 职位描述（用于排除关键词检查）
-  const desc = q(D.desc)
+  // 职位描述（用于排除关键词检查）。
+  // 结构化选择器偶尔会漏（页面改版），兜底直接用整个详情面板文本，
+  // 因为「985/211/硕士/2026届」这些词只会出现在详情里，宁可多匹配也不要漏。
+  const desc = q(D.desc) || (box?.textContent ?? '').trim()
   // Boss 活跃细分：优先专门的活跃元素，其次在线标签，最后从整块文本里正则提取
   const activeEl = qIn(box, D.active)
   const activeText =
@@ -840,7 +842,6 @@ function locateInList(job: JobItem): boolean {
   })
 }
 
-/** 预热 Boss 活跃：逐个打开职位详情，读 `.boss-active-time`，让列表统计也按 Boss 活跃过滤（较慢） */
 /**
  * 逐个打开职位详情，补齐「职位描述 / 学历 / 活跃状态」后重新筛选。
  *
@@ -862,6 +863,13 @@ async function preloadDetailsAndRefilter(label: string) {
     if (!job.element || !job.element.isConnected) continue
     panel?.setStatus(`${label} ${i + 1}/${jobs.length}：${job.jobName}`)
     await selectCard(job)
+    // 等右侧详情真正切换到该职位，否则会读到上一个职位的描述（导致排除词/届别判断错位）
+    const probe = job.jobName.slice(0, 6)
+    for (let w = 0; w < 16; w++) {
+      const t = detailPanel()?.textContent ?? ''
+      if (!probe || t.includes(probe)) break
+      await sleepAtLeast(300)
+    }
     const detail = readDetail()
     if (detail.activeText) {
       job.activeText = detail.activeText
