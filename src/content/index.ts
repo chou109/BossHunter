@@ -854,6 +854,7 @@ async function preloadDetailsAndRefilter(label: string) {
   if (!jobs.length) return
   // 这是用户主动发起的筛选动作，清掉上一轮批量投递遗留的停止标记
   stopRequested = false
+  let noDesc = 0
   for (let i = 0; i < jobs.length; i++) {
     if (stopRequested) {
       panel?.log('已停止读取详情', 'warn')
@@ -878,6 +879,7 @@ async function preloadDetailsAndRefilter(label: string) {
     }
     // 同步详情内容，让「排除关键词」「毕业届别」能按职位描述核对
     if (detail.desc) job.jobDescription = detail.desc
+    else noDesc++
     if (detail.jobLabels?.length) {
       job.jobLabels = detail.jobLabels
       job.skills = detail.jobLabels
@@ -886,6 +888,9 @@ async function preloadDetailsAndRefilter(label: string) {
     await sleepAtLeast(1200)
   }
   panel?.setStatus('读取完成，重新筛选…')
+  if (noDesc > 0) {
+    panel?.log(`有 ${noDesc} 个职位没读到详情描述，依赖描述的排除词对这些职位不生效`, 'warn')
+  }
   recomputeMatches()
   applyVisualFilter()
   panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
