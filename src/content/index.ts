@@ -477,6 +477,7 @@ function hasActiveFilter(cfg: AppConfig): boolean {
     f.bossActive !== 'none' ||
     f.experience !== 'none' ||
     f.onlyIntern ||
+    f.onlyCampus ||
     f.bossOnlineOnly ||
     f.goldHunter ||
     f.bossGoldMedalHr ||
@@ -517,6 +518,7 @@ function activeFilterSummary(cfg: AppConfig): string[] {
   rg('monthlySalary', '月薪')
   if (f.experience !== 'none') out.push(`经验: ${f.experience}`)
   if (f.onlyIntern) out.push('仅留实习')
+  if (f.onlyCampus) out.push('仅看校招')
   if (f.bossActive !== 'none') out.push(`Boss活跃: ${f.bossActive}`)
   if (f.bossOnlineOnly) out.push('仅Boss在线')
   if (f.goldHunter) out.push('剔猎头')

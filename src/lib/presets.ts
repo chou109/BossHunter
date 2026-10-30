@@ -99,6 +99,7 @@ export const PRESET_FRONTEND_INTERN: FilterPreset = {
       // 实测大部分搜索结果是全职（1-3年/3-5年），一旦开启会把整页筛空，
       // 用户会以为"预设坏了"。需要时在设置里自己勾上即可。
       onlyIntern: false,
+      onlyCampus: false,
       bossOnlineOnly: false,
       goldHunter: false,
       bossGoldMedalHr: false,
@@ -153,6 +154,7 @@ export function describePreset(p: FilterPreset): string {
   if (f.daySalary.enable && f.daySalary.min) bits.push(`日薪≥${f.daySalary.min}`)
   if (f.monthlySalary.enable && f.monthlySalary.min) bits.push(`月薪≥${f.monthlySalary.min}K`)
   if (f.onlyIntern) bits.push('仅实习')
+  if (f.onlyCampus) bits.push('仅校招')
   if (f.bossActive !== 'none') bits.push(f.bossActive === 'last3days' ? '3日内活跃' : '活跃筛选')
   return bits.join(' · ') || '未设置条件'
 }

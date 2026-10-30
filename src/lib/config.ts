@@ -56,7 +56,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
 
   rawFilters.bossActive = typeof rawFilters.bossActive === 'string' ? rawFilters.bossActive : 'none'
   rawFilters.experience = typeof rawFilters.experience === 'string' ? rawFilters.experience : 'none'
-  for (const k of ['excludeNegotiable', 'onlyIntern', 'bossOnlineOnly', 'goldHunter', 'bossGoldMedalHr', 'friendStatus']) {
+  for (const k of ['excludeNegotiable', 'onlyIntern', 'onlyCampus', 'bossOnlineOnly', 'goldHunter', 'bossGoldMedalHr', 'friendStatus']) {
     rawFilters[k] = !!rawFilters[k]
   }
 
