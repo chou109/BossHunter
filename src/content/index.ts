@@ -2214,7 +2214,7 @@ function init() {
         for (const s of activeFilterSummary(cfg)) panel.log(`  · ${s}`, 'warn')
         // 针对校招 / 实习转正的误以为「坏了」的常见情况给出提示
         if (cfg.filters.onlyCampus) {
-          panel.log('提示：社招列表里的校招岗本来就少，且几乎不会同时满足「日薪 300+ / 仅 Boss 在线」；建议把日薪/月薪门槛调低，或先在搜索框搜「校招」「27届」「校园招聘」。', 'info')
+          panel.log('提示：「只看校招」只认职位名/描述里的「校招」二字；社招列表里这类职位很少，建议先在搜索框搜「校招」再筛。', 'info')
         }
         if (cfg.filters.onlyInternConvert) {
           panel.log('提示：「实习转正」需要职位卡片带「可转正」等标签才会被保留；列表里没有的话，可搜索「实习 转正」再筛。', 'info')

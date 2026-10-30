@@ -128,14 +128,14 @@ function hitExcludeKeyword(text: string, raw: string): boolean {
 /**
  * 是否校招职位（「只看校招」用）。
  *
- * 只保留**有明确校招线索**的职位：
- * - 经验/标签显示「在校/应届」「应届生」；
- * - 职位名或描述含「校招」「校园招聘」「毕业生」「2027届」「27届」等。
- * 「经验不限」和只写年限要求的社招岗一律剔除，避免社招岗混进校招结果。
+ * 按用户要求收紧为**硬性条件**：职位名 / 经验 / 标签技能 / 描述里必须明确出现
+ * 「校招」二字（如「软件开发工程师（2027届校招）」）。
+ * 「在校/应届」这类只说明身份、不含「校招」字样的职位一律不算，避免社招岗混入。
+ * 注意：描述要等详情加载后才参与判断，列表阶段主要靠职位名/标签命中。
  */
 function isCampusJob(job: JobItem): boolean {
   const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')} ${job.jobDescription || ''}`
-  return /校招|校园招聘|应届|毕业生|在校|(?:20\d{2}|2\d)\s*届|20\d{2}\s*年毕业/.test(text)
+  return text.includes('校招')
 }
 
 /**
