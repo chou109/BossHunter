@@ -736,7 +736,11 @@ function findDetailApplyBtn(): HTMLElement | null {
     if (hit) return hit
   }
   // 详情面板还没渲染时才退化为全局查找（BOSS 未登录时会用登录按钮替代）
-  return qIn(document, D.apply)
+  // 独立详情页（/job_detail/xxx.html）没有 .job-detail-box，按文案兜底找「立即沟通」
+  const globalByText = Array.from(
+    document.querySelectorAll<HTMLElement>('a, button, [role="button"], .btn-startchat, .btn-sure, .btn-v2'),
+  ).find((el) => /立即沟通/.test((el.textContent ?? '').trim()))
+  return globalByText ?? qIn(document, D.apply)
 }
 
 /** 右侧详情面板容器 */
@@ -1499,6 +1503,118 @@ async function sleepInterruptible(ms: number) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * 「列表页没有卡片」的职位：打开详情页投递
+ *
+ * BOSS 列表是虚拟滚动，接口里有的职位不一定渲染成卡片（比如扩展自己多翻的
+ * 接口页）。这类职位无法在列表页点「立即沟通」，只能打开它的详情页
+ * （/job_detail/<encryptJobId>.html）去投。
+ * 流程：列表页写任务 → 后台开后台标签 → 详情页脚本点击并回传结果 → 关闭标签。
+ * ------------------------------------------------------------------ */
+const DETAIL_TASK_KEY = 'bhDetailTask'
+const DETAIL_DONE_KEY = 'bhDetailDone'
+// BOSS 的 encryptJobId 形如 3f09b1ba3554adb60nJ_2tS6F1dR，可能含 _ - ~
+const JOB_ID_RE = /^[A-Za-z0-9_~-]{10,}$/
+
+function isJobDetailPage(): boolean {
+  return (
+    location.pathname.includes('/job_detail/') ||
+    /\/web\/geek\/job(\/|\?|$)/.test(location.pathname + location.search)
+  )
+}
+
+/** 从详情页 URL 里取 encryptJobId（支持 /job_detail/xxx.html 和 ?jobId= 两种路由） */
+function jobIdFromDetailUrl(): string {
+  return (
+    location.pathname.match(/job_detail\/([^/.?]+)/)?.[1] ??
+    new URLSearchParams(location.search).get('jobId') ??
+    ''
+  )
+}
+
+async function waitForElement<T>(fn: () => T | null, timeout: number): Promise<T | null> {
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    const v = fn()
+    if (v) return v
+    await sleep(300)
+  }
+  return null
+}
+
+/** 详情页脚本：读到任务 → 点「立即沟通」→ 回传结果 → 请求后台关闭自己 */
+async function runDetailApply(): Promise<void> {
+  const finish = async (result: { ok?: boolean; limit?: boolean }) => {
+    const raw = await chrome.storage.local.get(DETAIL_TASK_KEY)
+    const task = raw?.[DETAIL_TASK_KEY] as { jobKey?: string } | undefined
+    await chrome.storage.local.set({
+      [DETAIL_DONE_KEY]: { jobKey: task?.jobKey ?? '', ts: Date.now(), ...result },
+    })
+    try {
+      await chrome.runtime.sendMessage({ type: 'bh-close-me' })
+    } catch {
+      /* 后台可能已休眠，标签页留给用户手动关闭 */
+    }
+  }
+  const raw = await chrome.storage.local.get(DETAIL_TASK_KEY)
+  const task = raw?.[DETAIL_TASK_KEY] as { jobKey?: string; ts?: number } | undefined
+  // 任务必须新鲜，避免用户手动打开详情页时被误投
+  if (!task?.jobKey || !task.ts || Date.now() - task.ts > 180000) return
+  const urlId = jobIdFromDetailUrl()
+  if (urlId && urlId !== task.jobKey) return
+  const btn = await waitForElement(() => findDetailApplyBtn(), 15000)
+  if (!btn) {
+    await finish({ ok: false })
+    return
+  }
+  clickNoNav(btn)
+  await sleep(1500)
+  const r = await handleSendDialog()
+  await sleep(600)
+  if (r.type === 'limit') {
+    await finish({ ok: false, limit: true })
+  } else {
+    // 'sent'/'confirm' 正常；'none' 也按成功记：详情页点「立即沟通」通常直接发出，
+    // 若记成失败会重复投递同一个 Boss。
+    await finish({ ok: true })
+  }
+}
+
+/** 列表页脚本：让后台在后台标签打开详情页，等结果回来 */
+async function applyViaDetailTab(job: JobItem): Promise<'ok' | 'fail' | 'limit'> {
+  const id = String(job.raw?.encryptJobId ?? job.key)
+  if (!JOB_ID_RE.test(id)) return 'fail'
+  const start = Date.now()
+  await chrome.storage.local.set({
+    [DETAIL_TASK_KEY]: { jobKey: id, ts: start },
+    [DETAIL_DONE_KEY]: null,
+  })
+  const res = await chrome.runtime
+    .sendMessage({ type: 'bh-open-tab', url: `https://www.zhipin.com/job_detail/${id}.html` })
+    .catch(() => null)
+  if (!res?.ok) {
+    panel.log(`打开详情页失败：${job.jobName}`, 'warn')
+    return 'fail'
+  }
+  const tabId = typeof res.tabId === 'number' ? res.tabId : undefined
+  while (Date.now() - start < 45000) {
+    await sleep(600)
+    if (stopRequested) {
+      if (tabId !== undefined) void chrome.runtime.sendMessage({ type: 'bh-close-tab', tabId }).catch(() => {})
+      return 'fail'
+    }
+    const raw = await chrome.storage.local.get(DETAIL_DONE_KEY)
+    const done = raw?.[DETAIL_DONE_KEY] as { jobKey?: string; ts?: number; ok?: boolean; limit?: boolean } | undefined
+    if (done && done.jobKey === id && (done.ts ?? 0) >= start) {
+      if (done.limit) return 'limit'
+      return done.ok ? 'ok' : 'fail'
+    }
+  }
+  if (tabId !== undefined) void chrome.runtime.sendMessage({ type: 'bh-close-tab', tabId }).catch(() => {})
+  panel.log(`详情页投递超时：${job.jobName}`, 'warn')
+  return 'fail'
+}
+
 /**
  * 投递期间的招呼语管理（方案 A：整批只设置一次）。
  *
@@ -1591,15 +1707,25 @@ async function runBatch(resumeProgress: DeliveryProgress | null = null) {
     // 接口拉到的职位如果卡片还没渲染出来（element 为空），selectCard() 会直接 return，
     // 接着 readDetail() 读到的就是"上一个职位"的详情 —— 那一下会投错人。
     const withCard = allMatched.filter((j) => j.element && j.element.isConnected)
+    // 没有卡片的职位：如果带 encryptJobId，可以打开详情页投递
+    const cardless = allMatched.filter(
+      (j) => !excludedSet.has(j.key) && (!j.element || !j.element.isConnected) && JOB_ID_RE.test(String(j.raw?.encryptJobId ?? j.key)),
+    )
     if (withCard.length < allMatched.length) {
+      const viaDetail = cardless.length
       panel.log(
-        `有 ${allMatched.length - withCard.length} 个职位还没有对应卡片，先跳过（可在页面上滚动出来后重试）`,
+        `有 ${allMatched.length - withCard.length} 个职位没有渲染出卡片` +
+          (viaDetail ? `，其中 ${viaDetail} 个将通过详情页投递` : '') +
+          '（其余可滚动出来后重试）',
         'warn',
       )
     }
     const candidates = withCard.filter((j) => !excludedSet.has(j.key))
-    const total = candidates.length
-    panel.log(`开始批量投递，共 ${total} 个职位`, 'info')
+    const total = candidates.length + cardless.length
+    panel.log(
+      `开始批量投递，共 ${total} 个职位（列表卡片 ${candidates.length} 个 + 详情页 ${cardless.length} 个）`,
+      'info',
+    )
     if (!total) {
       panel.setStatus('没有可投递的职位')
       panel.log('候选职位都没有对应卡片，已中止。请先在页面上滚动一下让卡片渲染出来。', 'warn')
@@ -1631,7 +1757,7 @@ async function runBatch(resumeProgress: DeliveryProgress | null = null) {
       } else {
         panel.log('读不到当前招呼语设置，本次会尝试设置自定义但可能无法恢复', 'warn')
       }
-      const applied = await applyGreetingOnce(candidates[0])
+      const applied = await applyGreetingOnce(candidates[0] ?? cardless[0])
       if (applied) {
         panel.log(`本批统一使用自定义招呼语：${applied}`, 'ok')
         if (/\{\{/.test(cfg.greetTemplate)) {
@@ -1655,7 +1781,7 @@ async function runBatch(resumeProgress: DeliveryProgress | null = null) {
       limit: deliveryLimit,
     } : {
       batchId: Date.now(),
-      queue: candidates.map((j) => j.key),
+      queue: [...candidates, ...cardless].map((j) => j.key),
       done: [],
       sent: 0,
       startedAt: Date.now(),
@@ -1721,6 +1847,32 @@ async function runBatch(resumeProgress: DeliveryProgress | null = null) {
           panel.log('已手动停止', 'warn')
           break
         }
+      }
+    }
+    // 列表页没有卡片的职位：逐个打开详情页投递（后台标签，不抢焦点）
+    if (!stopRequested && sent < deliveryLimit && cardless.length) {
+      panel.log(`开始通过详情页投递 ${cardless.length} 个职位…`, 'info')
+      for (const job of cardless) {
+        await waitIfPaused()
+        if (stopRequested || sent >= deliveryLimit) break
+        panel.setStatus(`详情页投递：${job.jobName}`)
+        const r = await applyViaDetailTab(job)
+        processed++
+        if (r === 'ok') {
+          sent++
+          doneKeys.push(job.key)
+          panel.log(`已投递(详情页): ${job.jobName}`, 'ok')
+        } else if (r === 'limit') {
+          panel.log('详情页提示已达今日沟通上限，停止投递', 'warn')
+          stopRequested = true
+          break
+        } else {
+          doneKeys.push(job.key)
+          enqueueRetry(job, '详情页投递未成功')
+          panel.log(`详情页投递失败: ${job.jobName}`, 'warn')
+        }
+        await persist()
+        if (!stopRequested) await sleepInterruptible(intervalMs(cfg.schedule.itemInterval))
       }
     }
     panel.setStatus(`完成，共投递 ${sent} 个`)
@@ -2092,6 +2244,13 @@ onConfigChanged((c) => {
 })
 
 async function main() {
+  // 详情页只跑「代投递」流程，不初始化列表页的面板。
+  // handleSendDialog 等函数会调用 panel.log，这里给一个只写控制台的轻量替身。
+  if (isJobDetailPage()) {
+    panel = { log: (text: string, level?: string) => console.log(`[BossHunter][详情页][${level ?? 'info'}]`, text) } as unknown as Panel
+    void runDetailApply()
+    return
+  }
   try {
     cfg = await loadConfig()
   } catch (e) {

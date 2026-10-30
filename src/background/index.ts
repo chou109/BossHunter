@@ -72,16 +72,46 @@ chrome.action.onClicked.addListener((tab) => {
   void onActionClick(tab)
 })
 
-// 接收 content 脚本消息并展示系统通知
+// 接收 content 脚本消息并展示系统通知（只处理 notify，其他消息交给后面的监听器）
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === 'notify') {
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: message.title ?? 'BossHunter - Boss猎手',
-      message: message.message ?? '',
-    })
-  }
+  if (message?.type !== 'notify') return false
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/icon128.png',
+    title: message.title ?? 'BossHunter - Boss猎手',
+    message: message.message ?? '',
+  })
   sendResponse({ ok: true })
   return true
+})
+
+/**
+ * 「列表页没有渲染出卡片」的职位只能去详情页投递：
+ * content 脚本请求后台在后台标签打开详情页，详情页脚本投完后再请求关闭自己。
+ */
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'bh-open-tab' && typeof message.url === 'string') {
+    chrome.tabs.create({ url: message.url, active: false }, (tab) => {
+      sendResponse({ ok: !!tab?.id, tabId: tab?.id })
+    })
+    return true
+  }
+  if (message?.type === 'bh-close-me') {
+    const id = sender.tab?.id
+    if (id !== undefined) {
+      chrome.tabs.remove(id).catch(() => {
+        /* 标签页可能已被用户手动关闭 */
+      })
+    }
+    sendResponse({ ok: true })
+    return true
+  }
+  if (message?.type === 'bh-close-tab' && typeof message.tabId === 'number') {
+    chrome.tabs.remove(message.tabId).catch(() => {
+      /* 幂等：可能已经关了 */
+    })
+    sendResponse({ ok: true })
+    return true
+  }
+  return false
 })
