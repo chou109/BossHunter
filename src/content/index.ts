@@ -243,6 +243,7 @@ function buildJob(raw: any, card: HTMLElement | undefined): JobItem {
     activeText: text.match(/刚刚活跃|今日活跃|\d+\s*日内活跃|本周活跃|本月活跃|\d+\s*月前活跃|\d+\s*年前活跃/)?.[0] ?? '',
     activeLevel: classifyActive(card, raw),
     experience: raw?.jobExperience ?? raw?.experienceDesc ?? '',
+    degree: raw?.jobDegree ?? raw?.degree ?? '',
     jobType: Number(raw?.jobType ?? 0),
     jobLabels: raw?.jobLabels ?? [],
     skills: raw?.skills ?? [],
@@ -840,18 +841,26 @@ function locateInList(job: JobItem): boolean {
 }
 
 /** 预热 Boss 活跃：逐个打开职位详情，读 `.boss-active-time`，让列表统计也按 Boss 活跃过滤（较慢） */
-async function warmUpBossActive() {
+/**
+ * 逐个打开职位详情，补齐「职位描述 / 学历 / 活跃状态」后重新筛选。
+ *
+ * 列表接口不返回职位描述，所以「排除关键词（985/211、硕士/博士 等）」和
+ * 「毕业届别（27届 vs 26届）」只有读过详情才能准确判断。
+ * 这里只对**已经通过初筛的少量职位**做，避免几十个职位每个 1.5 秒把流程拖死。
+ */
+async function preloadDetailsAndRefilter(label: string) {
   const jobs = matchedJobs.slice()
+  if (!jobs.length) return
+  // 这是用户主动发起的筛选动作，清掉上一轮批量投递遗留的停止标记
+  stopRequested = false
   for (let i = 0; i < jobs.length; i++) {
-    // 预热是逐个点详情、每个 1.5 秒，几十个职位要好几分钟；
-    // 用户点「终止」时必须能中断，否则会看起来完全没反应。
     if (stopRequested) {
-      panel?.log('已停止预热', 'warn')
+      panel?.log('已停止读取详情', 'warn')
       break
     }
     const job = jobs[i]
-    panel?.setStatus(`预热 Boss 活跃 ${i + 1}/${jobs.length}：${job.jobName}`)
-    if (!job.element) continue
+    if (!job.element || !job.element.isConnected) continue
+    panel?.setStatus(`${label} ${i + 1}/${jobs.length}：${job.jobName}`)
     await selectCard(job)
     const detail = readDetail()
     if (detail.activeText) {
@@ -859,14 +868,16 @@ async function warmUpBossActive() {
       job.activeLevel = classifyActiveText(detail.activeText)
       job.bossOnline = detail.online || job.bossOnline
     }
-    // 同步详情内容，让"排除关键词"也能按职位描述/标签核对
+    // 同步详情内容，让「排除关键词」「毕业届别」能按职位描述核对
     if (detail.desc) job.jobDescription = detail.desc
-    if (detail.jobLabels?.length) job.jobLabels = detail.jobLabels
+    if (detail.jobLabels?.length) {
+      job.jobLabels = detail.jobLabels
+      job.skills = detail.jobLabels
+    }
     // 放慢节奏，降低触发风控的概率
-    await sleepAtLeast(1500)
+    await sleepAtLeast(1200)
   }
-  panel?.setStatus('预热完成，重新筛选…')
-  // 重新过滤（现在 activeLevel 已知，Boss 活跃过滤会真正生效）
+  panel?.setStatus('读取完成，重新筛选…')
   recomputeMatches()
   applyVisualFilter()
   panel?.setStats(lastJobs.length, matchedJobs.length, hasActiveFilter(cfg))
@@ -2144,10 +2155,27 @@ function init() {
       panel.log(`已应用筛选（数据源：${usingApi ? '接口' : '卡片'}）`, 'ok')
       lastJobs = collectJobs()
       recomputeMatches()
-      // 预热 Boss 活跃：仅在设置里勾了「预热」才逐个打开详情读活跃（较慢）；否则只在批量投递时按活跃筛
-      if (cfg.warmBossActive && cfg.filters.bossActive !== 'none' && matchedJobs.length) {
-        panel.log('预热 Boss 活跃（逐个打开详情，较慢）…', 'info')
-        await warmUpBossActive()
+      // 需要详情才能判断的条件：排除关键词、毕业届别、校招、以及勾了预热活跃
+      const needDetailPrecision =
+        cfg.filters.onlyCampus ||
+        !!cfg.jobTargets.graduationYear ||
+        (cfg.filters.excludeKeywords?.length ?? 0) > 0
+      const warmActive = cfg.warmBossActive && cfg.filters.bossActive !== 'none'
+      if ((warmActive || needDetailPrecision) && matchedJobs.length) {
+        if (matchedJobs.length <= 60) {
+          panel.log(`逐个读取职位详情复核（${matchedJobs.length} 个，每个约 1.5 秒）…`, 'info')
+          await preloadDetailsAndRefilter('读取详情')
+          panel.log(`复核完成：符合 ${matchedJobs.length} 个`, 'info')
+        } else {
+          panel.log(
+            `符合 ${matchedJobs.length} 个，数量较多，跳过逐个读详情复核（投递时仍会逐条精确校验）`,
+            'info',
+          )
+        }
+      }
+      // 只看校招但没填届别时，提醒用户补上才能排除其他届别
+      if (cfg.filters.onlyCampus && !cfg.jobTargets.graduationYear) {
+        panel.log('提示：「只看校招」无法分辨届别，建议在设置里填写「毕业届别」= 2027。', 'info')
       }
       const dropped = lastJobs.filter((j) => !passFilter(j, cfg).pass)
       applyVisualFilter()

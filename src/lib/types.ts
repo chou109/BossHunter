@@ -170,6 +170,8 @@ export interface JobItem {
   activeLevel: BossActive
   /** 工作经验文案（如 在校/应届、1-3年、经验不限） */
   experience: string
+  /** 学历要求（如 本科、硕士、博士），来自列表接口 jobDegree */
+  degree?: string
   /** 职位类型（BOSS jobType：4=实习，1=全职等；用于过滤非实习） */
   jobType: number
   jobLabels: string[]

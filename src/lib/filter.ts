@@ -107,6 +107,25 @@ function isInternJob(job: JobItem): boolean {
 }
 
 /**
+ * 排除关键词是否命中。
+ * 兼容用户常见写法，避免「写了却没生效」：
+ * - 「A或B」：拆开按任一命中算；
+ * - 「X及以上 / X以上」：去掉后缀按 X 匹配（职位常写「硕士研究生及以上」「985、211院校」）；
+ * - 其余按子串匹配。
+ */
+function hitExcludeKeyword(text: string, raw: string): boolean {
+  const kw = (raw || '').trim().toLowerCase()
+  if (!kw) return false
+  const alts = kw.split(/\s*或\s*/).filter(Boolean)
+  for (const alt of alts) {
+    if (text.includes(alt)) return true
+    const base = alt.replace(/(?:及以上|以上|起)$/, '').trim()
+    if (base && base !== alt && base.length >= 2 && text.includes(base)) return true
+  }
+  return false
+}
+
+/**
  * 是否校招职位（「只看校招」用）。
  *
  * 只保留**有明确校招线索**的职位：
@@ -139,11 +158,11 @@ export function passFilter(job: JobItem, cfg: AppConfig): FilterResult {
   const tagRes = keywordFilter([...job.jobLabels, ...job.skills].join(' '), f.tags)
   if (tagRes) return tagRes
 
-  // 排除关键词：职位名/公司名/职位描述/标签技能 含任一即排除
+  // 排除关键词：职位名/公司名/学历/经验/职位描述/标签技能 含任一即排除
   if (f.excludeKeywords?.length) {
     const text =
-      `${job.jobName} ${job.company} ${job.jobDescription ?? ''} ${[...job.jobLabels, ...job.skills].join(' ')}`.toLowerCase()
-    const hit = f.excludeKeywords.find((k) => k && text.includes(k.trim().toLowerCase()))
+      `${job.jobName} ${job.company} ${job.degree ?? ''} ${job.experience ?? ''} ${job.jobDescription ?? ''} ${[...job.jobLabels, ...job.skills].join(' ')}`.toLowerCase()
+    const hit = f.excludeKeywords.find((k) => hitExcludeKeyword(text, k))
     if (hit) return { pass: false, reason: `含排除关键词: ${hit}` }
   }
 
