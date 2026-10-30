@@ -107,26 +107,16 @@ function isInternJob(job: JobItem): boolean {
 }
 
 /**
- * 判断是否校招职位（「只看校招」用，定位是**初筛**，宁松勿紧）。
+ * 是否校招职位（「只看校招」用）。
  *
- * BOSS 列表接口里 `jobType` 恒为 0，可靠的线索主要是：
- * - `jobExperience`：校招岗位通常显示「在校/应届」；
- * - 职位名 / 标签 / 描述：如「2027届校招」「27届」「校园招聘」「应届生」。
- * 判定规则：命中校招信号 → 保留；只有明确写了年限要求（社招特征）才剔除；
- * 「经验不限」和缺少经验信息的职位一律保留，避免初筛把合适的岗位筛掉。
+ * 只保留**有明确校招线索**的职位：
+ * - 经验/标签显示「在校/应届」「应届生」；
+ * - 职位名或描述含「校招」「校园招聘」「毕业生」「2027届」「27届」等。
+ * 「经验不限」和只写年限要求的社招岗一律剔除，避免社招岗混进校招结果。
  */
-function campusVerdict(job: JobItem): 'campus' | 'social' | 'unknown' {
-  const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')} ${job.jobDescription || ''}`
-  // 明确的校招信号（兼容「2027届」「27届」这类写法）
-  if (/校招|校园招聘|应届|毕业生|在校|(?:20\d{2}|2\d)\s*届|20\d{2}\s*年毕业/.test(text)) return 'campus'
-  // 明确的社招信号：具体年限要求（如 1-3年、3-5年、10年以上）
-  if (/\d+\s*-\s*\d+\s*年|\d+年以上|5-10年|10年以上/.test(job.experience || '')) return 'social'
-  return 'unknown'
-}
-
-/** 只看校招时是否通过：明确社招才剔除，其余（含「经验不限」/信息缺失）放行 */
 function isCampusJob(job: JobItem): boolean {
-  return campusVerdict(job) !== 'social'
+  const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')} ${job.jobDescription || ''}`
+  return /校招|校园招聘|应届|毕业生|在校|(?:20\d{2}|2\d)\s*届|20\d{2}\s*年毕业/.test(text)
 }
 
 /**
