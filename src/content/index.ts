@@ -89,6 +89,13 @@ let pagerExhausted = false
 let scrollExhausted = false
 /** autoFillToTarget 重入保护，避免滚动过程中卡片变化又触发一轮补足 */
 let autoFilling = false
+/** 风控冷却截止时间：被 BOSS 拦截（code:37/38）后一段时间内不再自动翻页/滚动 */
+let riskBlockedUntil = 0
+
+/** 当前是否在「职位列表页」且已有卡片：只有这里才允许自动加载，避免在首页等页面空转 */
+function onJobListPage(): boolean {
+  return /\/web\/geek\/jobs/.test(location.pathname) && readCards().length > 0
+}
 window.addEventListener('message', (e) => {
   if (e.data?.type === 'bh-net') {
     capturedNet.push(e.data)
@@ -634,7 +641,7 @@ function watchList() {
     // 开了筛选时结果会被压少，滚出新卡片就顺手补回目标值。
     // 没开筛选时所有卡片都通过，不需要替用户自动滚动页面。
     // pagerExhausted：接口/滚动都已判定到底，别再每次卡片变动都重拉（否则日志会每 2 秒刷一遍填空转）。
-    if (!scrollExhausted && hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
+    if (!scrollExhausted && Date.now() >= riskBlockedUntil && onJobListPage() && hasActiveFilter(cfg) && matchingAutoFillAllowed() && matchedJobs.length < (cfg.targetCount || 20)) {
       clearTimeout((watchList as any).__fill)
       ;(watchList as any).__fill = setTimeout(() => {
         // 上一轮补足已经"到底"过，且页面上卡片没变多，就别再滚一次（避免反复空转）
@@ -671,6 +678,9 @@ async function autoFillToTarget(why: string): Promise<boolean> {
   if (!matchingAutoFillAllowed()) return false
   if (autoFilling) return false
   if (scrollExhausted) return false
+  // 风控冷却中 / 不在职位列表页：一律不自动加载，避免被踢回首页后继续空转
+  if (Date.now() < riskBlockedUntil) return false
+  if (!onJobListPage()) return false
   const total = cfg.targetCount || 20
   if (matchedJobs.length >= total) return false
   const before = matchedJobs.length
@@ -1334,7 +1344,7 @@ async function fetchJobApiPages(
     onFresh,
     isEnough: () => !!shouldStop?.(),
     log: (t: string, lv?: 'info' | 'ok' | 'warn') => panel.log(t, lv ?? 'info'),
-    sleepMs: 450,
+    sleepMs: 1200,
     sleep: (ms: number) => sleep(ms),
   }
 
@@ -1368,6 +1378,11 @@ async function fetchJobApiPages(
   panel.log(`接口翻页结束：共拉 ${result.pagesFetched} 页、新增 ${result.added} 个（${rk}）`, result.got ? 'info' : 'warn')
   // 记录是否"判定到底"：到底后本轮不再反复自动翻页（否则会出现日志里那种每 2 秒重拉一次的空转）
   pagerExhausted = ['hasMore=false', 'empty', 'dupStreak'].includes(result.stopReason) || result.stopReason.startsWith('error')
+  // 命中风控：进入冷却，停止一切自动翻页/滚动，避免继续请求把页面踢回首页
+  if (result.stopReason === 'blocked' || result.stopReason === 'notJson') {
+    riskBlockedUntil = Date.now() + 5 * 60_000
+    panel.log('⚠ 已触发 BOSS 风控，自动加载暂停 5 分钟。请勿反复刷新/重试，冷却后可再点「多找一些」。', 'warn')
+  }
   return result.got
 }
 
@@ -1382,6 +1397,12 @@ async function fetchMoreJobsForDelivery(pages: number) {
 /** 加载更多职位：优先直接用接口拉更多页；接口没数据再回退到真实滚动加载。
  *  targetCount > 0 时一直加载，直到通过筛选的职位数达标或到底。 */
 async function loadMoreJobs(pages: number, targetCount = 0) {
+  // 风控冷却中：不再翻页/滚动，等冷却结束（用户也可以手动点「多找一些」强制执行）
+  if (Date.now() < riskBlockedUntil) {
+    const left = Math.ceil((riskBlockedUntil - Date.now()) / 1000)
+    panel.log(`BOSS 风控冷却中（还需 ${left}s），暂停自动加载`, 'warn')
+    return
+  }
   // 1) 直接用接口拉页（能超过页面 300 张卡的渲染上限）。
   //    每页拉完重建一次统计，够了就停，不再一路拉到底。
   const reached = () => targetCount > 0 && matchedJobs.length >= targetCount
@@ -1389,7 +1410,7 @@ async function loadMoreJobs(pages: number, targetCount = 0) {
   //   通过率未知，按 40% 保守估；多留 3 页余量。够用就停，不会为了凑数把 30 页全拉完。
   const need = Math.max(0, (targetCount || 20) - matchedJobs.length)
   const estPages = Math.ceil(need / Math.max(1, Math.round(15 * 0.4))) + 3
-  const pageBudget = Math.min(30, Math.max(4, estPages))
+  const pageBudget = Math.min(12, Math.max(4, estPages))
   await fetchJobApiPages(pageBudget, reached)
   if (reached()) {
     panel.log(`已通过接口凑够 ${matchedJobs.length} 个达标`, 'ok')
