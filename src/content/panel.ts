@@ -1535,7 +1535,7 @@ export class Panel {
           `<select class="bh-input" data-k="experience">${EXPERIENCE_OPTIONS.map((o) => `<option value="${o.value}"${(f.experience || 'none') === o.value ? ' selected' : ''}>${o.label}</option>`).join('')}</select>`,
         ) +
         `<label class="bh-check"><input type="checkbox" data-k="onlyIntern"${f.onlyIntern ? ' checked' : ''}><span>只要实习岗位</span></label>
-        <label class="bh-check"><input type="checkbox" data-k="onlyCampus"${f.onlyCampus ? ' checked' : ''}><span>只看校招岗位<small>职位名/描述含「校招 / 校园招聘」，或届别/年份（27届、2027届、2027-xxx）即保留</small></span></label>
+        <label class="bh-check"><input type="checkbox" data-k="onlyCampus"${f.onlyCampus ? ' checked' : ''}><span>只看校招岗位<small>通用匹配，不限年份：校招 / 校园招聘 / 应届生 / 毕业生 / 任一届别（27届、24届、2027届）/ 年份标题（2027-xxx）</small></span></label>
         <label class="bh-check"><input type="checkbox" data-k="onlyInternConvert"${f.onlyInternConvert ? ' checked' : ''}><span>只看实习转正<small>职位名 / 标签 / 描述里提到转正、留用、可转正才保留</small></span></label>`
 
       const bossBody =
