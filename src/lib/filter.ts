@@ -128,13 +128,15 @@ function hitExcludeKeyword(text: string, raw: string): boolean {
 /**
  * 是否校招职位（「只看校招」用）。
  *
- * 判定：职位名 / 经验 / 标签技能 / 描述里出现「校招」，或出现届别字样
- * （如「27届」「2027届」「2027年毕业」）。
- * 只标「在校/应届」、没有「校招」也没有届别的职位不算，避免社招岗混入。
+ * 覆盖 BOSS 上常见的校招写法（宁松勿漏，先筛得出来再谈精度）：
+ * - 「校招」「校招岗」「校园招聘」
+ * - 届别：「27届」「2027届」「2027年毕业」
+ * - 标题直接写年份：「2027-软件工程师」「2026-xxx」
+ * 只标「在校/应届」、既无校招字样也无年份的职位不算。
  */
 function isCampusJob(job: JobItem): boolean {
   const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')} ${job.jobDescription || ''}`
-  return /校招|(?:20\d{2}|2\d)\s*届|20\d{2}\s*年毕业/.test(text)
+  return /校招|校园|(?:20\d{2}|2\d)\s*(?:届|[-—年])|20\d{2}\s*年毕业/.test(text)
 }
 
 /**

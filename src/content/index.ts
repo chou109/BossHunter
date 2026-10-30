@@ -2219,6 +2219,20 @@ function init() {
       applyVisualFilter()
       panel.log(`符合 ${matchedJobs.length}，筛掉 ${dropped.length} 个：`, 'info')
       for (const d of dropped.slice(0, 40)) panel.log(`  ✕ ${d.jobName}(${d.salaryDesc || '?'}) — ${passFilter(d, cfg).reason}`, 'warn')
+      // 筛掉原因统计：结果被筛空时能一眼看出是哪条规则在杀，不用逐条翻日志
+      if (dropped.length) {
+        const stat = new Map<string, number>()
+        for (const d of dropped) {
+          const reason = passFilter(d, cfg).reason || '未知'
+          const key = reason.split(/[:：]/)[0].trim()
+          stat.set(key, (stat.get(key) ?? 0) + 1)
+        }
+        const summary = [...stat.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `${k} ${v}`)
+          .join(' · ')
+        panel.log(`筛掉原因统计：${summary}`, matchedJobs.length === 0 ? 'warn' : 'info')
+      }
       // 提示：如果开了薪资档位、但页面上一个薪资数字都读不到，说明筛选实际没生效
       const salaryFilterOn =
         cfg.filters.daySalary.enable || cfg.filters.hourlySalary.enable || cfg.filters.monthlySalary.enable
