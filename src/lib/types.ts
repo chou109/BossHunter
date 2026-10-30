@@ -75,6 +75,8 @@ export interface FilterConfig {
   onlyIntern: boolean
   /** 只看校招职位（应届 / 在校 / 校招类岗位；无相关线索的职位放行，避免误删） */
   onlyCampus: boolean
+  /** 只看实习转正岗位（职位名/标签/描述提到转正、留用才保留） */
+  onlyInternConvert: boolean
   /** 仅接受 Boss 在线的职位 */
   bossOnlineOnly: boolean
   /** 猎头过滤 */
@@ -217,6 +219,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     experience: 'none',
     onlyIntern: false,
     onlyCampus: false,
+    onlyInternConvert: false,
     bossOnlineOnly: false,
     goldHunter: false,
     bossGoldMedalHr: false,

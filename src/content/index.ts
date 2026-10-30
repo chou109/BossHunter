@@ -478,6 +478,7 @@ function hasActiveFilter(cfg: AppConfig): boolean {
     f.experience !== 'none' ||
     f.onlyIntern ||
     f.onlyCampus ||
+    f.onlyInternConvert ||
     f.bossOnlineOnly ||
     f.goldHunter ||
     f.bossGoldMedalHr ||
@@ -519,6 +520,7 @@ function activeFilterSummary(cfg: AppConfig): string[] {
   if (f.experience !== 'none') out.push(`经验: ${f.experience}`)
   if (f.onlyIntern) out.push('仅留实习')
   if (f.onlyCampus) out.push('仅看校招')
+  if (f.onlyInternConvert) out.push('仅看实习转正')
   if (f.bossActive !== 'none') out.push(`Boss活跃: ${f.bossActive}`)
   if (f.bossOnlineOnly) out.push('仅Boss在线')
   if (f.goldHunter) out.push('剔猎头')
@@ -2017,6 +2019,13 @@ function init() {
       if (lastJobs.length > 0 && matchedJobs.length === 0) {
         panel.log('⚠️ 结果被筛空了。当前启用的筛选：', 'warn')
         for (const s of activeFilterSummary(cfg)) panel.log(`  · ${s}`, 'warn')
+        // 针对校招 / 实习转正的误以为「坏了」的常见情况给出提示
+        if (cfg.filters.onlyCampus) {
+          panel.log('提示：社招列表里的校招岗本来就少，且几乎不会同时满足「日薪 300+ / 仅 Boss 在线」；建议把日薪/月薪门槛调低，或先在搜索框搜「校招」「27届」「校园招聘」。', 'info')
+        }
+        if (cfg.filters.onlyInternConvert) {
+          panel.log('提示：「实习转正」需要职位卡片带「可转正」等标签才会被保留；列表里没有的话，可搜索「实习 转正」再筛。', 'info')
+        }
         panel.log('（可点面板「看全部」恢复列表，或放宽「设置」里的条件）', 'info')
       }
       // 通过数未达目标，自动多抓几页填满到目标数

@@ -100,6 +100,7 @@ export const PRESET_FRONTEND_INTERN: FilterPreset = {
       // 用户会以为"预设坏了"。需要时在设置里自己勾上即可。
       onlyIntern: false,
       onlyCampus: false,
+      onlyInternConvert: false,
       bossOnlineOnly: false,
       goldHunter: false,
       bossGoldMedalHr: false,
@@ -155,6 +156,7 @@ export function describePreset(p: FilterPreset): string {
   if (f.monthlySalary.enable && f.monthlySalary.min) bits.push(`月薪≥${f.monthlySalary.min}K`)
   if (f.onlyIntern) bits.push('仅实习')
   if (f.onlyCampus) bits.push('仅校招')
+  if (f.onlyInternConvert) bits.push('仅实习转正')
   if (f.bossActive !== 'none') bits.push(f.bossActive === 'last3days' ? '3日内活跃' : '活跃筛选')
   return bits.join(' · ') || '未设置条件'
 }

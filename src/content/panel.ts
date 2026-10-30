@@ -1502,7 +1502,7 @@ export class Panel {
         (f.tags.value?.length ? 1 : 0) +
         (f.excludeKeywords?.length ? 1 : 0)
       const salaryOn = [f.daySalary, f.hourlySalary, f.monthlySalary].filter((r) => r.enable).length
-      const expOn = (f.experience && f.experience !== 'none' ? 1 : 0) + (f.onlyIntern ? 1 : 0) + (f.onlyCampus ? 1 : 0)
+      const expOn = (f.experience && f.experience !== 'none' ? 1 : 0) + (f.onlyIntern ? 1 : 0) + (f.onlyCampus ? 1 : 0) + (f.onlyInternConvert ? 1 : 0)
       const bossOn = (f.bossActive !== 'none' ? 1 : 0) + (f.bossOnlineOnly ? 1 : 0) + (cfg.warmBossActive ? 1 : 0)
       const otherOn = [f.goldHunter, f.bossGoldMedalHr, f.friendStatus, f.excludeNegotiable].filter(Boolean).length
 
@@ -1535,7 +1535,8 @@ export class Panel {
           `<select class="bh-input" data-k="experience">${EXPERIENCE_OPTIONS.map((o) => `<option value="${o.value}"${(f.experience || 'none') === o.value ? ' selected' : ''}>${o.label}</option>`).join('')}</select>`,
         ) +
         `<label class="bh-check"><input type="checkbox" data-k="onlyIntern"${f.onlyIntern ? ' checked' : ''}><span>只要实习岗位</span></label>
-        <label class="bh-check"><input type="checkbox" data-k="onlyCampus"${f.onlyCampus ? ' checked' : ''}><span>只看校招岗位<small>初筛用：应届 / 在校 / 校招类岗位；只剔除明确要求工作年限的社招岗</small></span></label>`
+        <label class="bh-check"><input type="checkbox" data-k="onlyCampus"${f.onlyCampus ? ' checked' : ''}><span>只看校招岗位<small>初筛用：应届 / 在校 / 校招类岗位；只剔除明确要求工作年限的社招岗</small></span></label>
+        <label class="bh-check"><input type="checkbox" data-k="onlyInternConvert"${f.onlyInternConvert ? ' checked' : ''}><span>只看实习转正<small>职位名 / 标签 / 描述里提到转正、留用、可转正才保留</small></span></label>`
 
       const bossBody =
         this.fg(
@@ -1881,6 +1882,7 @@ export class Panel {
     f.experience = (this.str('experience') as ExperienceFilter) || 'none'
     f.onlyIntern = this.val('onlyIntern')
     f.onlyCampus = this.val('onlyCampus')
+    f.onlyInternConvert = this.val('onlyInternConvert')
 
     cfg.jobTargets = {
       locations: this.splitKeywords(this.str('locations')),
@@ -1947,6 +1949,7 @@ export class Panel {
     setVal('experience', f.experience || 'none')
     setCheck('onlyIntern', f.onlyIntern)
     setCheck('onlyCampus', f.onlyCampus)
+    setCheck('onlyInternConvert', f.onlyInternConvert)
     setVal('bossActive', f.bossActive)
     setCheck('bossOnlineOnly', f.bossOnlineOnly)
     setCheck('warmBossActive', d.warmBossActive)

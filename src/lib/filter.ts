@@ -129,6 +129,16 @@ function isCampusJob(job: JobItem): boolean {
   return campusVerdict(job) !== 'social'
 }
 
+/**
+ * 是否「实习转正」岗位（「只看实习转正」用）。
+ * 正向匹配：职位名 / 经验 / 标签技能 / 描述里出现转正、留用、可转正等字样。
+ * 列表页通常能看到「可转正」标签，描述要等详情加载后才参与判断。
+ */
+function isInternConvertJob(job: JobItem): boolean {
+  const text = `${job.jobName} ${job.experience || ''} ${(job.jobLabels || []).join(' ')} ${(job.skills || []).join(' ')} ${job.jobDescription || ''}`
+  return /实习转正|转正|留用|可转正|优秀可转|表现优秀.*转正/.test(text)
+}
+
 export function passFilter(job: JobItem, cfg: AppConfig): FilterResult {
   const f = cfg.filters
 
@@ -152,6 +162,9 @@ export function passFilter(job: JobItem, cfg: AppConfig): FilterResult {
 
   // 只看校招【可选项】：明确社招（有年限要求）且无校招线索时剔除
   if (f.onlyCampus && !isCampusJob(job)) return { pass: false, reason: `非校招岗位: ${job.jobName}` }
+
+  // 只看实习转正【可选项】：职位信息里没提到转正/留用则剔除
+  if (f.onlyInternConvert && !isInternConvertJob(job)) return { pass: false, reason: `未标注转正: ${job.jobName}` }
 
   // 工作经验【可选项】：none=不限
   const expRes = matchExperience(job.experience, f.experience)
