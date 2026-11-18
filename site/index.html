@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BossHunter · BOSS直聘网页增强扩展</title>
+  <meta name="description" content="BossHunter（Boss猎手）为 BOSS直聘网页端补上批量投递、自动打招呼、薪资与 Boss 活跃度精细筛选。Chrome / Edge Manifest V3 扩展，开源、本地存储。">
+  <meta name="theme-color" content="#070b14">
+  <link rel="icon" type="image/png" href="./assets/icon128.png">
+  <link rel="apple-touch-icon" href="./assets/icon128.png">
+  <link rel="canonical" href="https://chou109.github.io/BossHunter/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="BossHunter · BOSS直聘网页增强扩展">
+  <meta property="og:description" content="批量投递、自动打招呼、薪资与 Boss 活跃度精细筛选。开源 Chrome / Edge 扩展。">
+  <meta property="og:url" content="https://chou109.github.io/BossHunter/">
+  <meta property="og:image" content="https://chou109.github.io/BossHunter/assets/shots/01-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body id="top">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top" aria-label="BossHunter 首页">
+        <img src="./assets/icon128.png" alt="" width="36" height="36">
+        <span class="brand-text">BossHunter<small>Boss 猎手</small></span>
+      </a>
+      <nav class="nav" aria-label="主导航">
+        <a href="#features">功能</a>
+        <a href="#install">安装</a>
+        <a href="#screens">界面</a>
+        <a href="#faq">问答</a>
+      </nav>
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/chou109/BossHunter" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn btn-primary btn-sm" href="./download/BossHunter.zip" download>下载扩展</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero-grid container">
+        <div class="hero-copy">
+          <span class="pill"><span class="pill-dot"></span>Chrome / Edge · Manifest V3 · v0.1.0</span>
+          <h1><span class="hero-line">把 BOSS 直聘网页端</span><br><span class="grad">补成你想要的样子</span></h1>
+          <p class="hero-lead">
+            BossHunter（Boss 猎手）在职位列表页注入一个悬浮控制面板，
+            把网页端缺失的批量投递、自动打招呼、日薪 / 时薪 / 月薪筛选和 Boss 活跃度细分补回来。
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="./download/BossHunter.zip" download>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
+              下载扩展压缩包
+            </a>
+            <a class="btn btn-ghost btn-lg" href="#install">
+              查看安装步骤
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+            </a>
+          </div>
+          <ul class="hero-meta" aria-label="项目特性">
+            <li><span class="check"></span>本地存储</li>
+            <li><span class="check"></span>无需登录</li>
+            <li><span class="check"></span>MIT 开源</li>
+          </ul>
+        </div>
+
+        <div class="hero-visual" aria-label="BossHunter 面板预览">
+          <div class="orb orb-a"></div>
+          <div class="orb orb-b"></div>
+          <div class="browser">
+            <div class="browser-top">
+              <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div class="urlbar">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+                zhipin.com/web/geek/jobs
+              </div>
+              <span class="bh-chip">BH</span>
+            </div>
+            <div class="browser-view">
+              <img src="./assets/shots/01-preview.png" alt="BossHunter 悬浮面板的投递预览页" width="764" height="1550">
+            </div>
+          </div>
+          <div class="float-card float-a"><strong>128</strong><span>职位已扫描</span></div>
+          <div class="float-card float-b"><span class="live-dot"></span>正在投递 5 个</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="stats container" aria-label="项目概览">
+      <div><strong>3</strong><span>面板页签</span></div>
+      <div><strong>6</strong><span>活跃度档位</span></div>
+      <div><strong>3</strong><span>薪资单位</span></div>
+      <div><strong>100%</strong><span>配置本地保存</span></div>
+    </section>
+
+    <section id="features" class="section">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow">FEATURES</p>
+          <h2>少点重复点击，多点有效沟通。</h2>
+          <p>把筛选、确认、投递串成一条顺手的流程，同时保留随时暂停和人工复核的空间。</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span class="feature-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>
+            </span>
+            <h3>批量投递</h3>
+            <p>分轮调度、固定或随机间隔、每日上限、目标数量；支持暂停、继续、终止和失败职位重试。</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+            </span>
+            <h3>精细筛选</h3>
+            <p>日薪、时薪、月薪金额档位，Boss 活跃状态，职位 / 公司 / 技能关键词与排除词，一套配置反复用。</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+            </span>
+            <h3>真实薪资捕获</h3>
+            <p>在页面主世界 hook 接口，读取真实薪资与活跃时间，绕开自定义字体混淆，解析不出时不误删。</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-5"/></svg>
+            </span>
+            <h3>数据留在本地</h3>
+            <p>配置保存在 <code>chrome.storage.local</code>，没有账号系统，也不会上传你的职位列表和筛选条件。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="install" class="section install">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow">INSTALL</p>
+          <h2>四步装好，打开 BOSS 就能用。</h2>
+          <p>这是未上架商店的开发版扩展，需要用“加载已解压的扩展程序”安装。压缩包解压后请保留文件夹位置。</p>
+        </div>
+
+        <div class="install-grid">
+          <ol class="steps">
+            <li>
+              <span class="step-num">01</span>
+              <div>
+                <h3>下载并解压</h3>
+                <p>下载 <code>BossHunter.zip</code>，解压到一个固定目录。移动或删除该目录后，扩展会失效。</p>
+                <a class="text-link" href="./download/BossHunter.zip" download>下载最新压缩包 <span aria-hidden="true">↘</span></a>
+              </div>
+            </li>
+            <li>
+              <span class="step-num">02</span>
+              <div>
+                <h3>打开扩展管理页</h3>
+                <p>用右侧助手复制对应浏览器的扩展页地址，粘贴到地址栏回车。Chrome 是 <code>chrome://extensions</code>，Edge 是 <code>edge://extensions</code>。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-num">03</span>
+              <div>
+                <h3>开启开发者模式并加载</h3>
+                <p>打开右上角“开发者模式”，点“加载已解压的扩展程序”，选择刚才解压出来的文件夹。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-num">04</span>
+              <div>
+                <h3>打开职位列表页</h3>
+                <p>访问 BOSS 直聘职位列表页，点右下角 <span class="bh-inline">BH</span> 展开面板；在“设置”里配置条件，保存并筛选后即可预览和投递。</p>
+              </div>
+            </li>
+          </ol>
+
+          <aside class="browser-helper" aria-labelledby="helper-title">
+            <div class="helper-head">
+              <div>
+                <p class="eyebrow">EXTENSION PAGE</p>
+                <h3 id="helper-title">扩展页地址助手</h3>
+              </div>
+              <span class="detected" id="detected-browser">识别中…</span>
+            </div>
+            <div class="address-box">
+              <code id="extensions-url">chrome://extensions</code>
+              <button class="copy-btn" id="copy-url" type="button">复制地址</button>
+            </div>
+            <div class="browser-tabs" role="group" aria-label="选择浏览器">
+              <button type="button" data-browser="chrome" class="is-active">Chrome</button>
+              <button type="button" data-browser="edge">Edge</button>
+              <button type="button" data-browser="brave">Brave</button>
+              <button type="button" data-browser="opera">Opera</button>
+              <button type="button" data-browser="vivaldi">Vivaldi</button>
+            </div>
+            <p class="helper-note">
+              普通网页无法直接跳转 <code>chrome://</code>、<code>edge://</code> 等浏览器内部页面。
+              点“复制地址”，粘贴到地址栏回车即可。
+            </p>
+            <details class="why">
+              <summary>为什么不能自动跳转？</summary>
+              <p>这是浏览器的安全限制：如果网页能随意打开扩展管理、设置等内部页面，任意网站都可能诱导你修改敏感设置。因此网页只能复制地址，不能代替你跳转。</p>
+            </details>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="screens" class="section">
+      <div class="container">
+        <div class="section-head split">
+          <div>
+            <p class="eyebrow">SCREENS</p>
+            <h2>面板就长这样。</h2>
+          </div>
+          <p>预览、日志、设置三个页签；筛选条件和投递节奏都在面板里完成。点击截图可放大。</p>
+        </div>
+        <div class="gallery">
+          <button class="shot" type="button" data-full="./assets/shots/05-settings.png" data-caption="设置：筛选条件、预设方案与高级节奏">
+            <img src="./assets/shots/05-settings.png" alt="BossHunter 设置页" width="764" height="1762">
+            <span>设置 · 筛选条件</span>
+          </button>
+          <button class="shot" type="button" data-full="./assets/shots/01-preview.png" data-caption="预览：可投递名单、排除与重试队列">
+            <img src="./assets/shots/01-preview.png" alt="BossHunter 投递预览页" width="764" height="1550">
+            <span>预览 · 可投递名单</span>
+          </button>
+          <button class="shot" type="button" data-full="./assets/shots/06-log.png" data-caption="日志：实时运行记录与结果状态">
+            <img src="./assets/shots/06-log.png" alt="BossHunter 运行日志页" width="764" height="964">
+            <span>日志 · 实时状态</span>
+          </button>
+          <button class="shot" type="button" data-full="./assets/shots/16-presets.png" data-caption="预设：内置方案与自定义筛选预设">
+            <img src="./assets/shots/16-presets.png" alt="BossHunter 预设方案页" width="764" height="1962">
+            <span>预设 · 一键套用</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="download" class="section download-section">
+      <div class="container">
+        <div class="download-card">
+          <div class="download-copy">
+            <p class="eyebrow">DOWNLOAD</p>
+            <h2>下载最新构建</h2>
+            <p>压缩包由 GitHub Actions 在每次推送后自动构建。解压后，用“加载已解压的扩展程序”选择解压目录。</p>
+            <div class="download-actions">
+              <a class="btn btn-primary btn-lg" href="./download/BossHunter.zip" download>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
+                下载 BossHunter.zip
+              </a>
+              <a class="btn btn-ghost btn-lg" href="https://github.com/chou109/BossHunter" target="_blank" rel="noopener">查看源码</a>
+            </div>
+            <ul class="download-meta">
+              <li>版本 <strong>0.1.0</strong></li>
+              <li>Manifest V3</li>
+              <li>MIT License</li>
+            </ul>
+          </div>
+          <div class="download-art" aria-hidden="true">
+            <div class="zip-icon">ZIP</div>
+            <div class="zip-name">BossHunter.zip</div>
+            <div class="zip-sub">dist/ · 最新构建产物</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section faq">
+      <div class="container faq-grid">
+        <div class="section-head">
+          <p class="eyebrow">FAQ</p>
+          <h2>安装前，先看这里。</h2>
+          <p>如果这里没有答案，可以去 GitHub 提 Issue。</p>
+          <a class="text-link" href="https://github.com/chou109/BossHunter/issues" target="_blank" rel="noopener">打开 Issues <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="faq-list">
+          <details>
+            <summary>为什么不能一键打开 <code>chrome://extensions</code>？</summary>
+            <p>浏览器不允许普通网页跳转到内部页面，<code>chrome://</code>、<code>edge://</code>、<code>brave://</code> 都属于这一类。页面提供“复制地址”按钮，粘贴到地址栏回车是最快的方式。</p>
+          </details>
+          <details>
+            <summary>下载后怎么安装？</summary>
+            <p>先解压 zip，再打开扩展管理页，开启“开发者模式”，点“加载已解压的扩展程序”，选择解压后的文件夹。不要直接选择 zip 文件。</p>
+          </details>
+          <details>
+            <summary>支持 Edge 吗？</summary>
+            <p>支持 Edge、Brave、Opera、Vivaldi 等 Chromium 内核浏览器。扩展页地址不同，可以在安装区切换浏览器并复制对应地址。Firefox 未验证。</p>
+          </details>
+          <details>
+            <summary>为什么下载的是 zip，不是 crx？</summary>
+            <p>Chrome 商店之外的 crx 安装会受到限制，而开发版扩展用 zip 解压后“加载已解压的扩展程序”更稳定，也方便查看源码。</p>
+          </details>
+          <details>
+            <summary>会上传我的数据吗？</summary>
+            <p>不会。配置和运行状态保存在浏览器本地的 <code>chrome.storage.local</code> 中，项目没有账号系统，也没有收集数据的服务端。</p>
+          </details>
+          <details>
+            <summary>使用自动化投递会被封号吗？</summary>
+            <p>任何自动化操作都有账号风控风险。项目内置了投递间隔下限，但仍请遵守 BOSS 直聘的服务条款，合理、适度使用，并自行承担相关风险。</p>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <img src="./assets/icon128.png" alt="" width="28" height="28">
+        <span>BossHunter · Boss 猎手</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/chou109/BossHunter" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/chou109/BossHunter/blob/master/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        <a href="#top">回到顶部</a>
+      </div>
+    </div>
+    <p class="container disclaimer">本项目仅供学习与研究前端扩展开发技术，与 BOSS 直聘官方无关。请遵守目标网站的服务条款，合理、适度使用。</p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="lightbox" id="lightbox" hidden>
+    <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭大图">×</button>
+    <figure>
+      <img id="lightbox-img" src="" alt="">
+      <figcaption id="lightbox-cap"></figcaption>
+    </figure>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

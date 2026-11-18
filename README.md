@@ -4,6 +4,8 @@
 
 BossHunter（Boss猎手）是一个针对 [BOSS直聘](https://www.zhipin.com/) 网页端的 Chrome 扩展，它在职位列表页右侧注入一个悬浮控制面板，帮你把网页端缺失、而移动端独有的能力补回来：**批量投递、日薪/时薪/月薪金额筛选、Boss 活跃状态细分**等。
 
+> 官网与最新压缩包：[chou109.github.io/BossHunter](https://chou109.github.io/BossHunter/)
+
 ---
 
 ## ✨ 功能亮点
